@@ -1,0 +1,167 @@
+# =============================================================================
+# Module 1 — Data Layer
+# Neuro Honeypot Platform
+#
+# Brings up ONLY the data layer (PostgreSQL+TimescaleDB and Redis).
+# This compose file is intentionally standalone so the data layer can be
+# verified in isolation before any honeypot services are added.
+#
+# Run from /opt/honeypot/ on the VPS:
+#   docker compose -f deploy/module-1-data-layer/docker-compose.yml up -d
+#
+# Or copy this file to /opt/honeypot/ and run:
+#   docker compose up -d
+#
+# PREREQUISITES:
+#   - Module 0 host bootstrap must be complete and host must have been rebooted
+#   - /opt/honeypot/ directory scaffold exists (created by module-0 script)
+#   - .env file with POSTGRES_PASSWORD is present in the same directory as
+#     this compose file (copy from .env.example and fill in values)
+#
+# IMPORTANT — IMAGE PINNING:
+#   Before going live, replace 'latest' and version tags with SHA digests:
+#     docker pull timescale/timescaledb:latest-pg16 && \
+#     docker inspect timescale/timescaledb:latest-pg16 --format '{{index .RepoDigests 0}}'
+#     docker pull redis:7-alpine && \
+#     docker inspect redis:7-alpine --format '{{index .RepoDigests 0}}'
+#   Pin format: image: timescale/timescaledb@sha256:<64-hex-chars>
+# =============================================================================
+
+networks:
+  data-net:
+    name: data-net          # canonical name — overrides compose project-name prefix so Module 5
+                            # (log-shipper) can join it as external: true without knowing the project name
+    # Internal bridge — no internet egress from data layer containers.
+    # PostgreSQL and Redis are never exposed to the public internet.
+    # log-shipper (Module 5) attaches to this network to write events.
+    # This network is re-used in the full stack compose — the name must match.
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24   # fixed subnet from Section 7.1; must not overlap with honeypot-net (172.20.0.0/24) or egress-net (172.22.0.0/24)
+
+volumes:
+  # Named volumes — Docker manages ownership under userns-remap automatically.
+  # These do NOT need chown to 100000:100000 (unlike bind-mounted host paths).
+  postgres-data:
+    # TimescaleDB data directory. Persists across container restarts and upgrades.
+    # To wipe and reinitialize: docker compose down && docker volume rm module-1-data-layer_postgres-data
+  redis-data:
+    # Redis persistence (RDB snapshots via redis.conf). Allows stream replay after restart.
+    # If Redis restart latency is acceptable and stream durability is not required,
+    # this volume can be removed and replaced with `tmpfs: /data` for lower I/O.
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 + TimescaleDB
+  # ---------------------------------------------------------------------------
+  # WHY TimescaleDB:
+  #   The honeypot_events table is a high-write time-series workload. TimescaleDB's
+  #   hypertable partitioning chunks the table by time (1-week chunks by default),
+  #   which keeps index sizes bounded and makes chunk-level retention drops
+  #   (drop_chunks) instant — no full-table scan or VACUUM required.
+  #   At 100 events/sec sustained (attack flood), a plain Postgres table would
+  #   accumulate 8.6M rows/day; TimescaleDB's chunk architecture handles this
+  #   cleanly with the 90-day retention policy.
+  #
+  # SECURITY NOTES:
+  #   - cap_drop: [ALL] with only SETUID/SETGID added back is required by the
+  #     TimescaleDB entrypoint (gosu) to drop from root to the postgres user.
+  #     Test removing these caps on image upgrade — newer images may not need them.
+  #   - Port 5432 is NOT published. PostgreSQL is reachable only on data-net.
+  #     log-shipper is the only service that writes to it; it joins data-net.
+  #   - The init SQL at /docker-entrypoint-initdb.d/ runs ONCE on first start
+  #     (when the data volume is empty). Re-running compose up does NOT re-run init.
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add:
+      - SETUID          # required by timescaledb entrypoint (gosu) to drop root → postgres user
+      - SETGID          # same as above
+      - CHOWN           # required by entrypoint to chown data dir to postgres user (chown -R postgres $PGDATA)
+      - FOWNER          # required by entrypoint to chmod data dir after chown (chmod 700 $PGDATA)
+      - DAC_READ_SEARCH # required by entrypoint to traverse $PGDATA (mode 700, owned by postgres) as root when running find
+    networks:
+      - data-net
+    volumes:
+      # Named volume for TimescaleDB data directory
+      - postgres-data:/var/lib/postgresql/data
+      # Bind-mounted init scripts — runs once on first start when data volume is empty.
+      # Path on host must be owned by 100000:100000 (userns-remap requirement).
+      # From /opt/honeypot/, this resolves to: /opt/honeypot/services/postgres/init/
+      - ../../services/postgres/init/:/docker-entrypoint-initdb.d/:ro
+    environment:
+      - POSTGRES_DB=honeypot
+      - POSTGRES_USER=honeypot
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}    # loaded from .env file; never hardcode
+    # Resource limits from Section 7.3:
+    # 640m is sized for: shared_buffers(128m) + WAL writer + autovacuum + TimescaleDB background
+    # workers + per-connection work_mem + maintenance_work_mem peak.
+    # 512m OOM-killed mid-transaction during write bursts in profiling — 640m is the stable floor.
+    # No memswap_limit — controlled swap during write backlog drains is preferable to killing the DB.
+    mem_limit: 640m
+    cpus: "1.0"    # needs full core to absorb write bursts from log-shipper during attack storms
+    # No pids_limit on postgres — pg spawns one backend per connection;
+    # connection count is controlled by max_connections in postgresql.conf, not pids_limit.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U honeypot -d honeypot"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s    # TimescaleDB takes longer on first run (extension loading + hypertable init)
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 (Alpine)
+  # ---------------------------------------------------------------------------
+  # WHY Redis:
+  #   Redis Streams provide a persistent, replayable pub/sub bus for real-time
+  #   event delivery to HoneyDash. The log-shipper publishes every normalized
+  #   event to the 'honeypot:events' stream after writing to PostgreSQL.
+  #   HoneyDash can consume from any point in the stream — useful after a
+  #   restart to catch up on missed events without re-querying PostgreSQL.
+  #
+  # SECURITY NOTES:
+  #   - Port 6379 is NOT published to the host. This is CRITICAL:
+  #     Port 6379 is owned by OpenCanary (the public-facing fake Redis lure on
+  #     honeypot-net). Publishing the internal Redis on the same port would
+  #     create a port conflict AND expose the real data bus to the internet.
+  #   - Authentication is configured via redis.conf (requirepass directive).
+  #     Even on an internal-only network, always configure a password — defense
+  #     in depth against a container escape reaching the data network.
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add:
+      - SETUID    # required by redis entrypoint to drop from root to redis user (setresuid)
+      - SETGID    # same as above
+    networks:
+      - data-net
+    volumes:
+      - redis-data:/data
+      # Redis config bind-mount — includes requirepass and maxmemory-policy settings.
+      # Create /opt/honeypot/config/redis/redis.conf before starting this service.
+      # A minimal redis.conf is provided in module-1-data-layer/redis.conf.example.
+      - ../../config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    # Resource limits from Section 7.3:
+    # 128m covers ~500,000 small stream entries (~200 bytes each) before eviction.
+    # No memswap_limit — Redis swap is managed by its own maxmemory-policy setting;
+    # Docker-level swap restriction would conflict with Redis's internal eviction logic.
+    mem_limit: 128m
+    cpus: "0.25"    # pub/sub and stream append are I/O-bound, not CPU-bound
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s

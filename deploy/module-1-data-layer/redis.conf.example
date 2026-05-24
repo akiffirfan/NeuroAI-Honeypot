@@ -1,0 +1,76 @@
+# =============================================================================
+# redis.conf.example
+# Neuro Honeypot Platform — Redis configuration for the data-net bus
+#
+# INSTRUCTIONS:
+#   Copy this file to /opt/honeypot/config/redis/redis.conf on the VPS:
+#     cp redis.conf.example /opt/honeypot/config/redis/redis.conf
+#   Set the requirepass value to a strong password before deployment.
+#   Ensure the file is owned by 100000:100000 (userns-remap requirement):
+#     chown 100000:100000 /opt/honeypot/config/redis/redis.conf
+#
+# This Redis instance is the internal event stream bus on data-net.
+# It is NEVER exposed to the internet (no published ports).
+# Port 6379 on the public internet is served by OpenCanary (the fake Redis lure).
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Authentication
+# WHY: Even on an internal-only bridge network, defense-in-depth requires
+# authentication. If a container escape reaches data-net, an attacker without
+# the password cannot read or manipulate the event stream.
+# ---------------------------------------------------------------------------
+requirepass <replace-with-strong-redis-password>
+
+# ---------------------------------------------------------------------------
+# Memory management
+# WHY: maxmemory enforces the mem_limit from docker-compose.yml at the Redis
+# application level. When maxmemory is reached, maxmemory-policy determines
+# what happens to old entries — allkeys-lru evicts the least-recently-used
+# keys, preventing the stream from filling memory indefinitely.
+# Sized at 100m to stay within the 128m container mem_limit with headroom.
+# ---------------------------------------------------------------------------
+maxmemory 100mb
+maxmemory-policy allkeys-lru
+
+# ---------------------------------------------------------------------------
+# Persistence (RDB snapshots)
+# WHY: The event stream should survive a Redis container restart. RDB snapshots
+# are written to the redis-data named volume every 60 seconds if at least 1000
+# keys have changed, or every 300 seconds if at least 1 key changed.
+# If stream replay durability is not required, comment out these save lines.
+# ---------------------------------------------------------------------------
+save 300 1
+save 60 1000
+
+# ---------------------------------------------------------------------------
+# Disable dangerous commands that could be used to manipulate the event stream
+# if an attacker reaches data-net via a container escape or misconfiguration.
+# FLUSHALL/FLUSHDB would wipe the entire stream; CONFIG allows reconfiguring
+# Redis to disable requirepass or write to arbitrary files.
+# ---------------------------------------------------------------------------
+rename-command FLUSHALL ""
+rename-command FLUSHDB ""
+rename-command CONFIG ""
+rename-command DEBUG ""
+
+# ---------------------------------------------------------------------------
+# Bind to all interfaces inside the container
+# The container is only attached to data-net (internal: true), so there is no
+# external exposure regardless. Binding to 0.0.0.0 allows containers on
+# data-net to connect using the service name 'redis' (Docker DNS).
+# ---------------------------------------------------------------------------
+bind 0.0.0.0
+
+# Standard Redis port
+port 6379
+
+# Disable Redis protected-mode (would block connections when no auth is set;
+# since requirepass is configured above, this is moot but explicit for clarity)
+protected-mode no
+
+# Log level: notice is appropriate for production (not verbose, not silent)
+loglevel notice
+
+# Data directory — matches the redis-data named volume mount point
+dir /data
