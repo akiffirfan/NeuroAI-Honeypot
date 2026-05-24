@@ -1,0 +1,12 @@
+[Unit]
+Description=Honeypot DNAT rules — redirect public honeypot ports to container IPs
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/honeypot/deploy/systemd/honeypot-dnat.sh
+
+[Install]
+WantedBy=multi-user.target

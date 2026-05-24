@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-apply honeypot DNAT rules every 2 minutes (survives docker compose wipeouts)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=2min
+Unit=honeypot-dnat.service
+
+[Install]
+WantedBy=timers.target
