@@ -1,0 +1,132 @@
+# tinyproxy.conf — Egress Proxy for Cowrie Malware Capture (Option B)
+# Operator: copy this file before bringing up Module 2 with Option B active.
+#
+#   cp tinyproxy.conf.example ../../config/tinyproxy/tinyproxy.conf
+#   sudo chown 100000:100000 ../../config/tinyproxy/tinyproxy.conf
+#
+# This file is bind-mounted read-only into the egress-proxy container at:
+#   /etc/tinyproxy/tinyproxy.conf
+#
+# To change the allowlist or any setting: edit this file on the host and restart
+# the egress-proxy container. No image rebuild is required.
+#
+# SECURITY MODEL (gatekeeper conditions 1-3, 7, 10):
+#   - Only ports 80 and 443 are allowed via CONNECT (HTTP and HTTPS payloads).
+#   - FTP/21 is EXCLUDED for the first 30 days (active-mode FTP creates a back-channel
+#     data connection that bypasses the proxy and is a weaponization risk).
+#     Re-evaluate after reviewing 30 days of Cowrie download URL logs.
+#   - RFC1918 and 169.254.169.254 (DigitalOcean metadata) are blocked by nftables
+#     egress rules on egress-net (Section 9 of honeypot-project-plans.md).
+#   - DNS is pinned to 1.1.1.1/9.9.9.9 via the docker-compose.yml dns: directive.
+#     This config file does NOT override DNS — that is handled at the container level.
+#   - Logging goes to stderr (captured by Docker's log driver); no persistent log file
+#     is written inside the container (compatible with read_only: true).
+
+# ──────────────────────────────────────────────────────────
+# LISTEN ADDRESS AND PORT
+# Tinyproxy listens on all interfaces within the container so that Cowrie
+# (on honeypot-net, 172.20.0.0/24) can reach it at http://egress-proxy:8888.
+# The proxy is NOT exposed to the host — no ports: directive in docker-compose.yml.
+Port 8888
+Listen 0.0.0.0
+
+# ──────────────────────────────────────────────────────────
+# ACCESS CONTROL
+# Allow requests from any source IP within the container network.
+# The effective scope is honeypot-net (172.20.0.0/24) only because no other
+# network can reach this container. This Allow line covers Cowrie's IP within
+# that subnet without hard-coding it (IP assignment is dynamic per compose run).
+Allow 0.0.0.0/0
+
+# ──────────────────────────────────────────────────────────
+# CONNECT PORT ALLOWLIST (gatekeeper condition 2)
+# ONLY ports 80 (HTTP) and 443 (HTTPS) are permitted.
+# Any attacker-supplied URL targeting other ports (FTP:21, SMTP:25, arbitrary C2 ports)
+# will be rejected by tinyproxy with a 403 before it reaches egress-net.
+# DO NOT add port 21 — active-mode FTP opens a back-channel data connection
+# that bypasses the proxy and may expose the VPS IP to attacker-controlled servers.
+# Re-evaluate FTP after 30 days of observed Cowrie download URL patterns.
+ConnectPort 80
+ConnectPort 443
+
+# ──────────────────────────────────────────────────────────
+# FILTER / URL ALLOWLIST
+# FilterDefaultDeny is intentionally set to No (deny-list mode, not allow-list mode).
+# Reason: URL-pattern allow-listing is brittle and maintenance-intensive; the nftables
+# egress rules (Section 9) and the ConnectPort ceiling above are the primary controls.
+# If a future operator wants URL-level filtering, uncomment Filter and FilterDefaultDeny
+# and provide a Filter file path — but this requires the filter file to be bind-mounted
+# into the container and is incompatible with the current read_only: true posture
+# unless the filter file is in a read-only bind-mount.
+#
+# Filter /etc/tinyproxy/filter       # uncomment only if a filter file is mounted
+# FilterDefaultDeny No
+
+# ──────────────────────────────────────────────────────────
+# LOGGING
+# Log to stderr so Docker captures all tinyproxy output via its log driver.
+# Compatible with read_only: true (no file write needed).
+# The /var/log/tinyproxy tmpfs in docker-compose.yml provides a writable target
+# if tinyproxy requires a log directory to exist — it does not receive file writes here.
+LogFile ""
+LogLevel Info
+
+# ──────────────────────────────────────────────────────────
+# UPSTREAM PROXY
+# No upstream proxy — tinyproxy connects directly to the internet via egress-net.
+# Upstream /
+
+# ──────────────────────────────────────────────────────────
+# TIMEOUT
+# Disconnect stalled connections after 90 seconds.
+# Prevents a single attacker-supplied slow payload from holding a proxy thread open.
+Timeout 90
+
+# ──────────────────────────────────────────────────────────
+# MAXIMUM CLIENTS
+# Limit concurrent proxy sessions. At 15 max Cowrie sessions and one download per session,
+# 20 is a generous ceiling that prevents proxy thread exhaustion.
+MaxClients 20
+
+# ──────────────────────────────────────────────────────────
+# VIA HEADER
+# Suppress the Via header to avoid leaking proxy presence to the attacker's server.
+# An attacker whose C2 server logs HTTP headers would see the Via header and know the
+# download was intercepted/proxied — this would be a honeypot fingerprint tell.
+DisableViaHeader Yes
+
+# ──────────────────────────────────────────────────────────
+# ANONYMOUS MODE — INTENTIONALLY NOT SET
+#
+# WARNING: tinyproxy's "Anonymous" directive works as an ALLOWLIST of headers to KEEP,
+# not a blocklist of headers to strip. Listing "Anonymous X-Forwarded-For" tells tinyproxy
+# to strip everything EXCEPT X-Forwarded-For — the exact opposite of what you want.
+#
+# Correct posture: do NOT set any Anonymous directives. Instead:
+#   - "DisableViaHeader Yes" above suppresses the Via header entirely.
+#   - Tinyproxy does NOT add X-Forwarded-For by default (only added if XTinyproxy Yes).
+#   - XTinyproxy is not set, so no X-Tinyproxy header is added.
+# Result: the proxy adds no identifying headers to forwarded requests, which is the
+# desired behaviour. Adding Anonymous directives here would BREAK this by enabling
+# anonymous mode and preserving only the explicitly listed headers (breaking cookies,
+# Authorization, Content-Type, etc. for attacker download URLs).
+#
+# If you later need to explicitly strip a specific header, use:
+#   Header "X-Header-Name" ""
+# instead of the Anonymous directive.
+
+# ──────────────────────────────────────────────────────────
+# USER / GROUP — INTENTIONALLY NOT SET
+#
+# WARNING: Setting "User nobody" / "Group nogroup" here conflicts with the Docker-level
+# containment. The compose service sets:
+#   user: "100000:100000"
+#   cap_drop: [ALL]   (drops CAP_SETUID and CAP_SETGID)
+# With all capabilities dropped, tinyproxy's setuid("nobody") call fails with EPERM.
+# Depending on the tinyproxy version, this either crashes the container (blocking Cowrie
+# via depends_on: service_healthy) or silently ignores the directive and runs as UID 100000.
+#
+# The correct approach: privilege drop is handled entirely at the Docker layer. The
+# compose "user: 100000:100000" directive is the authoritative UID/GID control.
+# Do not set User or Group in this file — tinyproxy will run as the UID Docker assigned
+# without attempting any setuid call.

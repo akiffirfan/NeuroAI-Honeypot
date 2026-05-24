@@ -1,0 +1,109 @@
+# Module 2 — Cowrie SSH Honeypot
+# Standalone compose for independent deployment and verification.
+# Run from /opt/honeypot/deploy/module-2-cowrie/ after Module 1 passes all 7 checks.
+#
+# OPERATOR PREREQUISITES (do not skip):
+#   1. Module 1 verify-module-1.sh — all 7 checks must be green
+#   2. Fake filesystem scaffold:   bash fs-scaffold.sh
+#   3. Cowrie config:              cp cowrie.cfg.example ../../config/cowrie/cowrie.cfg
+#   4. userdb.txt:                 echo "root:*" | sudo tee ../../config/cowrie/userdb.txt
+#                                  (the * pattern means "reject all passwords — log attempts")
+#   5. Chown bind-mount dirs:      sudo chown -R 100000:100000 ../../config/cowrie/ ../../honeypot/cowrie/
+#
+# EGRESS POSTURE (Option B dropped 2026-05-19):
+#   The egress-proxy (tinyproxy) container has been removed. Cowrie runs on honeypot-net
+#   with internal: false, which means it has a direct internet path. This is accepted:
+#     - Cowrie's wget.py/curl.py use Twisted's treq library which ignores $http_proxy env
+#       vars entirely — the proxy never functioned for payload capture (CRIT-R8-3).
+#     - HoneyDash stores only metadata (hashes, URLs), not binaries — no payload capture loss.
+#     - Fewer containers, less attack surface, honest about direct egress.
+#   honeypot-net is set to internal: false so Docker publishes the 127.0.0.1:2222 port
+#   binding correctly (Docker silently ignores ports: on internal: true networks).
+#
+# IMAGE PINNING:
+#   Before going live, replace the :latest tag with a SHA digest:
+#     docker pull cowrie/cowrie:latest
+#     docker inspect cowrie/cowrie:latest --format '{{index .RepoDigests 0}}'
+#   Then substitute: image: <image>@sha256:<64-hex-chars>
+#
+# NFTABLES DNAT (NOT applied by this compose — manual operator step):
+#   Step 17 (deployment sequence): configure nftables DNAT
+#     nft add rule ip nat PREROUTING tcp dport 22 dnat to 127.0.0.1:2222
+#   Step 18 (deployment sequence): ONLY THEN open port 22 at the VPS provider firewall/security group.
+#   Opening port 22 at the provider before the DNAT is active exposes the host SSH daemon.
+#   See Section 9 of honeypot-project-plans.md for the full nftables ruleset.
+
+networks:
+  honeypot-net:
+    name: honeypot-net      # canonical name — overrides compose project-name prefix so other
+                            # modules can join it as external: true without knowing the project name
+    driver: bridge
+    internal: false         # must be false for Docker to publish Cowrie's port 2222 to loopback;
+                            # see CLAUDE.md "Docker port publishing with internal: true networks"
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+    # Other honeypot modules (honeypot-api, opencanary, mariadb-lure, log-shipper) will
+    # join this network when they are deployed. The network is created here and must
+    # already exist when later modules are brought up.
+
+volumes:
+  cowrie-logs:
+    name: cowrie-logs  # canonical name — overrides compose project-name prefix (same pattern as opencanary-logs)
+    # Tailed read-only by log-shipper (Module 5). Contains cowrie.json event stream.
+  cowrie-state:
+    name: cowrie-state  # canonical name
+    # Covers the full Cowrie state directory: SSH host keys, TTY sessions, downloads.
+    # Mounted at the DEFAULT state_path (/cowrie/cowrie-git/var/lib/cowrie) — this is
+    # where the Docker image's internal VOLUME declaration points, so it's writable
+    # even with read_only: true on the container. Do NOT set state_path in cowrie.cfg
+    # (leave it as the built-in default); setting it to an absolute path breaks host
+    # key generation because the parent dir is read-only outside the volume mount.
+    # TTY replay: docker exec cowrie python3 -m cowrie.scripts.playlog /cowrie/cowrie-git/var/lib/cowrie/tty/<hash>
+    # Downloads: sudo ls /var/lib/docker/100000.100000/volumes/cowrie-state/_data/downloads/
+
+services:
+
+  # ── COWRIE SSH HONEYPOT ───────────────────────────────────────────────────────
+  cowrie:
+    # TODO: pin to SHA digest before go-live (see image pinning comment above)
+    image: cowrie/cowrie:latest
+    container_name: cowrie
+    restart: on-failure:5       # Compose-native max-attempts; deploy.restart_policy is Swarm-only
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /cowrie/var/run:size=8m,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - honeypot-net
+    ports:
+      - "0.0.0.0:2222:2222"    # bind all interfaces so Docker uses kernel DNAT (preserves real src IP);
+                                  # port 2222 is blocked at DO cloud firewall — only DNAT'd port 22 traffic reaches this
+    # DNAT (manual operator step after verify passes):
+    #   nft add rule ip nat PREROUTING tcp dport 22 dnat to 127.0.0.1:2222
+    # WHY loopback, not container IP: internal:true networks block PREROUTING DNAT→container
+    # directly because Docker's FORWARD chain drops external→internal traffic. Publishing
+    # to 127.0.0.1:2222 lets Docker handle the inner NAT; our outer DNAT only needs to
+    # redirect port 22 to the loopback port that Docker is already listening on.
+    volumes:
+      - cowrie-logs:/cowrie/var/log/cowrie
+      - cowrie-state:/cowrie/cowrie-git/var/lib/cowrie
+      - ../../config/cowrie/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ../../config/cowrie/userdb.txt:/cowrie/cowrie-git/etc/userdb.txt:ro
+      - ../../honeypot/cowrie/fs/:/cowrie/honeyfs/:ro
+      - ../../config/cowrie/fs.pickle:/cowrie/cowrie-git/src/cowrie/data/fs.pickle:ro
+    environment:
+      - COWRIE_HOSTNAME=neurocore-gpu01
+    mem_limit: 256m
+    memswap_limit: 256m     # equals mem_limit → zero swap allocated; OOM-kill instead of disk thrash
+    cpus: "0.5"
+    pids_limit: 200         # ~50 concurrent sessions × ~4 Twisted processes each = 200 ceiling
+    # SESSION LIMIT TRADE-OFF:
+    #   max_concurrent_sessions = 15 in cowrie.cfg (Section 3.2).
+    #   At 15 sessions × ~5 MB each = ~75 MB peak RSS; 256m provides 3× headroom.
+    #   pids_limit: 200 is a hard backstop against fork-bomb chains from attacker subprocesses.
+    #   Do not raise mem_limit without updating Section 7.3 footprint table.

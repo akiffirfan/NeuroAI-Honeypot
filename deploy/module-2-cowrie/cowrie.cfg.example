@@ -1,0 +1,126 @@
+# cowrie.cfg — Cowrie SSH/Telnet Honeypot Configuration
+# Operator: copy this file to /opt/honeypot/config/cowrie/cowrie.cfg before bringing up Module 2.
+#
+#   cp cowrie.cfg.example ../../config/cowrie/cowrie.cfg
+#   chown 100000:100000 ../../config/cowrie/cowrie.cfg
+#
+# For full reference see: https://cowrie.readthedocs.io/en/latest/
+# Cowrie reads this file at startup; changes require container restart.
+
+[honeypot]
+
+# ──────────────────────────────────────────────────────────
+# DECEPTION IDENTITY
+# Spoofed hostname shown in the shell prompt: user@neurocore-gpu01:~$
+# Must match the COWRIE_HOSTNAME environment variable in docker-compose.yml
+# to avoid a mismatch between the SSH banner and the shell prompt.
+hostname = neurocore-gpu01
+
+# SSH version string presented during handshake.
+# Ubuntu 22.04 LTS ships OpenSSH 8.9p1 — realistic for a GPU training server.
+# Keep this consistent with any nginx/fake-banner decisions in other modules.
+ssh_version_string = SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6
+
+# Port Cowrie listens on INSIDE the container.
+# Do NOT change — docker-compose.yml maps host 127.0.0.1:2222 → container :2222.
+listen_port = 2222
+
+# ──────────────────────────────────────────────────────────
+# SESSION LIMITS
+# Conservative cap to prevent OOM at 256 MB mem_limit (see Section 3.2 and Section 7.1).
+# At 15 concurrent sessions × ~5 MB each = ~75 MB peak Cowrie RSS; 256m provides 3× headroom.
+# Raise to 30 only if mem_limit is increased to 384m (requires updating Section 7.3 footprint table).
+max_concurrent_sessions = 15
+
+# Disconnect idle sessions after 120 seconds of no input.
+interact_timeout = 120
+
+# Disconnect if no authentication attempt is made within 120 seconds of connection.
+authentication_timeout = 120
+
+# ──────────────────────────────────────────────────────────
+# CREDENTIAL CAPTURE
+# UserDB auth — reads userdb.txt for valid credentials.
+# Without this explicit setting some Cowrie versions default to rejecting
+# all passwords regardless of userdb.txt content.
+# Cowrie logs ALL attempts as cowrie.login.failed (wrong password) or
+# cowrie.login.success (correct password). Both capture username+password.
+# NOTE: HoneypotPasswordChecker was removed — it crashes in Cowrie 2.9.19
+# with UnboundLocalError on the 'authname' variable (upstream bug).
+auth_class = UserDB
+
+# ──────────────────────────────────────────────────────────
+# STATE / DATA DIRECTORY
+# Absolute path so Cowrie writes tty/ and downloads/ into the named Docker volumes
+# (cowrie-tty and cowrie-dl) rather than the container's anonymous writable layer.
+# Without this, state_path defaults to var/lib/cowrie (relative to basedir inside
+# the container) which is NOT covered by any volume mount and is lost on restart.
+state_path = /cowrie/var/lib/cowrie
+
+# ──────────────────────────────────────────────────────────
+# KEYSTROKE / SESSION RECORDING
+# Full TTY session recordings written to /cowrie/var/log/cowrie/tty/.
+# Replay with: python3 -m cowrie.scripts.playlog <tty-file>
+ttylog = true
+ttylog_file = var/log/cowrie/tty/$(date '+%Y-%m-%d')/$(session)
+
+# ──────────────────────────────────────────────────────────
+# DOWNLOAD LIMITS
+# Cap each individual payload fetch at 10 MB to prevent disk-fill attacks.
+# A single attacker cannot fill cowrie-dl by wget-ing a large ISO — the download is
+# truncated at 10 MB and the attempt is logged as cowrie.session.file_download.
+# Note: Cowrie's wget.py/curl.py use Twisted's treq library which ignores $http_proxy
+# env vars — downloads go directly outbound (Option B egress-proxy was dropped 2026-05-19
+# because treq does not honour proxy settings; see CRIT-R8-3 in feedback.md).
+download_limit_size = 10485760
+
+# ──────────────────────────────────────────────────────────
+# FAKE COMMANDS
+# Enable the ML/GPU tool set so the deception is consistent with the "AI training server" legend.
+# These are Cowrie built-in fake command stubs — they accept arguments and produce plausible output.
+# nvidia-smi, python, pip, and git are standard in cowrie's honeyfs; wandb and jupyter require
+# custom scripts placed in /cowrie/honeyfs/usr/local/bin/ (see fs-scaffold.sh).
+fake_command_nvidiastatus = true
+
+# ──────────────────────────────────────────────────────────
+# OUTPUT PLUGINS
+# Only jsonlog is enabled. The log-shipper tails cowrie.json and forwards events to HoneyDash.
+# Do NOT enable the database output plugin — we use our own PostgreSQL via log-shipper.
+# Do NOT enable the textlog plugin — duplicate logging, unnecessary disk I/O.
+[output_jsonlog]
+enabled = true
+logfile = var/log/cowrie/cowrie.json
+
+# ──────────────────────────────────────────────────────────
+# MOTD — shown after "successful" login (rare, only if bait credentials are configured)
+# The DNS canary token is embedded here so that any attacker who reads /etc/motd
+# (or who the canary is served to via SSH MOTD delivery) triggers a DNS lookup.
+# Replace <YOUR_CANARYTOKEN_DOMAIN> with the actual Canarytokens.org subdomain before deployment.
+# Register this token at: https://canarytokens.org/generate → DNS token → label "neuro-ssh-motd"
+#
+# DNS canary: neuro-ssh-hostkey.<YOUR_CANARYTOKEN_DOMAIN>
+#
+# MOTD file path (relative to Cowrie root inside container)
+# Create /cowrie/honeyfs/etc/motd with content like:
+#
+#   Welcome to neurocore-gpu01 — Neuro AI Infrastructure
+#   Authorized access only. All sessions are monitored and logged.
+#   Support: ops@neuro.ai | Docs: https://docs.neuro.ai/infra/gpu
+#
+#   For DNS canary registration, embed token in a hostname reference:
+#   NFS server: nfs.neuro-ssh-hostkey.<YOUR_CANARYTOKEN_DOMAIN>
+#
+# See Section REC-3 of honeypot-project-plans.md for canarytoken placement strategy.
+
+# ──────────────────────────────────────────────────────────
+# SSH PROTOCOL SETTINGS
+# These are aligned with what OpenSSH 8.9p1 on Ubuntu 22.04 would advertise.
+# Changing these can affect fingerprinting — keep them consistent with ssh_version_string.
+[ssh]
+version = SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6
+
+# ──────────────────────────────────────────────────────────
+# TELNET (disabled — we only expose SSH port 22 via DNAT to 2222)
+# OpenCanary handles Telnet on port 23 in Module 3.
+[telnet]
+enabled = false
