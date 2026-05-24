@@ -1,0 +1,61 @@
+# =============================================================================
+# Honeypot Project — .gitignore
+# Only the deploy/ directory belongs in GitHub.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Sensitive planning docs — contain VPS IP, SSH port, full deception playbook
+# -----------------------------------------------------------------------------
+CLAUDE.md
+GEMINI.md
+honeypot-project-plans.md
+feedback.md
+mentor-spec.md
+aisardashboard.md
+patch_plan.py
+
+# -----------------------------------------------------------------------------
+# Secrets — never commit real .env files
+# -----------------------------------------------------------------------------
+.env
+**/.env
+!**/.env.example
+
+# -----------------------------------------------------------------------------
+# MaxMind GeoIP databases — binary, 78 MB total, license restricts redistribution
+# Populate the geoip-data Docker volume manually per Module 5 prerequisites.
+# -----------------------------------------------------------------------------
+*.mmdb
+
+# -----------------------------------------------------------------------------
+# HoneyDash — separate upstream repo with its own git history
+# Clone independently: git clone https://github.com/aisarmika/HoneyDash.git
+# -----------------------------------------------------------------------------
+HoneyDash/
+
+# -----------------------------------------------------------------------------
+# Claude Code internal state — agent memory, session data, tool settings
+# -----------------------------------------------------------------------------
+.claude/
+
+# -----------------------------------------------------------------------------
+# OS / editor noise
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# Python cache — generated at runtime, not source
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# -----------------------------------------------------------------------------
+# Generated / scratch files
+# -----------------------------------------------------------------------------
+gemini-solution.md
