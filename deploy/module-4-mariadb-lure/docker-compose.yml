@@ -1,0 +1,146 @@
+# Module 4 — mariadb-lure (Real MariaDB Deception Target)
+# Standalone compose for independent deployment and verification.
+# Run from /opt/honeypot/deploy/module-4-mariadb-lure/ after Module 3 passes all 8 checks.
+#
+# OPERATOR PREREQUISITES (do not skip):
+#   1. Module 3 verify-module-3.sh — all 8 checks must be green
+#      (Module 2 created honeypot-net; this compose joins it as external)
+#   2. Create host config directories:
+#        mkdir -p ../../config/mariadb/init ../../config/mariadb/conf.d
+#   3. Copy config files:
+#        cp init/01-schema.sql ../../config/mariadb/init/01-schema.sql
+#        cp honeypot.cnf ../../config/mariadb/conf.d/honeypot.cnf
+#   4. Set ownership (new VPS — no userns-remap, use root:root):
+#        sudo chown -R root:root ../../config/mariadb/
+#      MariaDB drops to the mysql user before reading conf.d/ and initdb.d/ —
+#      both dirs AND all files must be world-readable. Do NOT go-rwx any path:
+#        sudo chmod 755 ../../config/mariadb/conf.d ../../config/mariadb/init
+#        sudo chmod 644 ../../config/mariadb/conf.d/honeypot.cnf \
+#                       ../../config/mariadb/init/01-schema.sql
+#   5. Pre-create general.log before first up (log_file_create_mode removed in MariaDB 11.4):
+#        docker run --rm -v mariadb-logs:/var/log/mysql alpine sh -c \
+#          'touch /var/log/mysql/general.log && chmod 666 /var/log/mysql/general.log'
+#   6. Copy and populate the .env file:
+#        cp .env.example .env && chmod 600 .env
+#        # Edit .env — set MARIADB_ROOT_PASSWORD and MARIADB_PASSWORD to strong random values
+#        # Generate: openssl rand -base64 32 | tr -d '/+='
+#   7. KILL CHAIN — inject neuro_app password into Cowrie honeyfs BEFORE first up:
+#        NEURO_APP_PASS=$(sudo grep '^MARIADB_PASSWORD=' .env | cut -d= -f2)
+#        sudo sed -i "s/REPLACEME-neuro-app-password/${NEURO_APP_PASS}/g" \
+#          /opt/honeypot/honeypot/cowrie/fs/root/.config/neuro/config.yaml \
+#          /opt/honeypot/honeypot/cowrie/fs/root/.bash_history
+#        cd /opt/honeypot/deploy/module-2-cowrie && docker compose restart cowrie
+#   8. Run: docker compose up -d
+#   9. Wait ~45s for init SQL to complete, then run: bash verify-module-4.sh
+#
+# WHY REAL MARIADB (NOT OpenCanary MySQL):
+#   OpenCanary's MySQL module returns a static banner: "5.5.43-0ubuntu0.14.04.1"
+#   This string is an exact OpenCanary fingerprint. nmap -sV identifies it on the
+#   first probe. Once MySQL is identified as OpenCanary, all other OpenCanary
+#   services on the host (FTP, Telnet, SMTP, Redis) lose credibility.
+#   A real MariaDB 11.4 returns a genuine, current version banner that withstands
+#   nmap -sV, mysql CLI probes, and automated scanner fingerprinting.
+#   See Section 3.4 of honeypot-project-plans.md for the full decision record.
+#
+# IMAGE PINNING (do this before production goes live):
+#   This compose uses the mutable tag mariadb:11.4 — safe for development/staging.
+#   Before traffic is live on port 3306, pin to a SHA digest:
+#
+#     docker pull mariadb:11.4
+#     docker inspect mariadb:11.4 --format '{{index .RepoDigests 0}}'
+#     # Output: mariadb@sha256:<64-hex-chars>
+#
+#   Then replace `image: mariadb:11.4` below with:
+#     image: mariadb@sha256:<64-hex-chars>
+#
+# PORT EXPOSURE MODEL:
+#   Port 3306 is bound to 127.0.0.1 (loopback) only in this compose.
+#   Internet access requires an nftables DNAT rule at the host level.
+#   This is a MANUAL operator step (Step 7 in verify output) — it is NOT
+#   applied automatically by this compose file (same pattern as Modules 2 and 3).
+#
+#   REQUIRED nftables DNAT rule (run after verify-module-4.sh passes):
+#     The honeypot-dnat.service systemd unit already contains this rule
+#     (uncommented during Module 4 deployment). After uncommenting, reload:
+#       sudo systemctl daemon-reload
+#       sudo systemctl restart honeypot-dnat.service
+#   Then open port 3306 at the VPS provider firewall if not already open.
+
+networks:
+  honeypot-net:
+    external: true    # created by Module 2; do NOT redefine — joining only
+    name: honeypot-net  # must match exactly what Module 2 set
+
+volumes:
+  mariadb-data:
+    name: mariadb-data  # canonical name — InnoDB datadir persists across container restarts
+                        # without this, the datadir lives in the container writable layer
+                        # and is lost on `docker compose down` (not rm -v, but down)
+  mariadb-logs:
+    name: mariadb-logs  # canonical name — general query log target
+                        # tailed read-only by log-shipper (Module 5) to capture every
+                        # attacker connection and query as sensor_type: "mysql" events
+
+services:
+
+  mariadb-lure:
+    image: mariadb:11.4    # pinned to 11.4 minor stream — do NOT use latest; see pinning note above
+    container_name: mariadb-lure
+    restart: on-failure:5         # Compose-native max-attempts; deploy.restart_policy is Swarm-only
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID        # MariaDB entrypoint drops from root → mysql user via gosu; requires SETUID
+      - SETGID        # same — required for the UID/GID transition on container start
+      - DAC_OVERRIDE  # required for initial datadir chown on first start
+    networks:
+      honeypot-net:
+        ipv4_address: 10.10.20.4  # pinned — DNAT rule in honeypot-dnat.sh targets this IP
+    # No host ports: binding — ctf-db-1 already holds 127.0.0.1:3306 on this shared VPS.
+    # Internet exposure uses direct container-IP DNAT: iif "eth0" tcp dport 3306 dnat to 10.10.20.4:3306
+    # Source IP is preserved. Local testing: docker exec mariadb-lure mysql -u root -p...
+    volumes:
+      # InnoDB datadir — named volume so data survives container restarts
+      - mariadb-data:/var/lib/mysql
+      # General query log — every connection and query written here
+      # log-shipper (Module 5) mounts this volume read-only at /var/log/mariadb/
+      - mariadb-logs:/var/log/mysql
+      # Init SQL — runs on first start only (when mariadb-data is empty)
+      # Creates neuro_prod schema with tables and seed data
+      - ../../config/mariadb/init/:/docker-entrypoint-initdb.d/:ro
+      # MariaDB options — enables general_log, bind-address, performance_schema=0
+      - ../../config/mariadb/conf.d/:/etc/mysql/conf.d/:ro
+    env_file:
+      - .env
+    environment:
+      # MARIADB_ROOT_PASSWORD, MARIADB_DATABASE, MARIADB_USER, MARIADB_PASSWORD
+      # are sourced from .env — do NOT hardcode passwords here
+      - MARIADB_DATABASE=neuro_prod
+      - MARIADB_USER=neuro_app
+      # neuro_app has SELECT-only access to neuro_prod — see 01-schema.sql GRANT
+      # Attacker connecting as neuro_app can read the fake schema but cannot write
+    mem_limit: 256m
+    memswap_limit: 256m   # internet-exposed port 3306 — OOM-kill under connection flood
+                           # is correct; swap-thrash degrades all other honeypot services
+    cpus: "0.25"           # low query rate expected from honeypot traffic; I/O-bound
+    pids_limit: 50         # MariaDB main process + connection threads; 50 is safe ceiling
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s    # first-boot init SQL takes ~10–20s; 45s gives full margin
+    # TELEMETRY:
+    #   Every attacker connection and query is written to /var/log/mysql/general.log
+    #   (the mariadb-logs volume). log-shipper (Module 5) mounts mariadb-logs read-only
+    #   at /var/log/mariadb/ and tails general.log, emitting sensor_type: "mysql" events
+    #   into the unified pipeline (Section 5.2 / 6.4 of honeypot-project-plans.md).
+    #
+    # DECEPTION POSTURE:
+    #   - neuro_app user: SELECT-only on neuro_prod (realistic service account posture)
+    #   - root user: password from .env (strong random — NOT empty, contrary to old plan draft)
+    #   - Schema: training_runs, models, users, gpu_jobs, dataset_metadata — all fake ML data
+    #   - Seed rows reference run-042 through run-047, m.chen@neuro.ai, priya.nair@neuro.ai,
+    #     j.park@neuro.ai, s.ali@neuro.ai, svc-deploy — consistent with the Neuro web frontend (Section 4.2)

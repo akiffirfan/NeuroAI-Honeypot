@@ -1,0 +1,46 @@
+[mysqld]
+# ─── Honeypot telemetry ────────────────────────────────────────────────────────
+# Capture every connection and query for attacker session analysis.
+# The log file lives on the mariadb-logs volume (/var/log/mysql/general.log).
+# log-shipper (Module 5) tails this file read-only via the shared named volume
+# and emits sensor_type: "mysql" events into the unified pipeline.
+#
+# Log format per line:
+#   TIMESTAMP  THREAD_ID  COMMAND  ARGUMENT
+#   2026-05-19T14:22:11.418Z 7 Connect  root@45.142.212.10 on neuro_prod using TCP/IP
+#   2026-05-19T14:22:11.421Z 7 Query    SELECT version()
+#   2026-05-19T14:22:11.519Z 7 Quit
+#
+general_log      = 1
+general_log_file = /var/log/mysql/general.log
+
+# ─── Network binding ───────────────────────────────────────────────────────────
+# Bind to all interfaces inside the container.
+# Docker publishes port 3306 to 127.0.0.1 on the host (loopback-only).
+# Internet access is controlled by the nftables DNAT rule in honeypot-dnat.service.
+bind-address = 0.0.0.0
+
+# ─── DNS resolution ────────────────────────────────────────────────────────────
+# Disable reverse-DNS lookups on connecting clients.
+# Without this, MariaDB resolves attacker IPs to hostnames and the general.log
+# shows "root@hostname" instead of "root@1.2.3.4". The log-shipper MariaDB regex
+# only matches dotted-decimal/hex IPs; hostname entries are silently skipped,
+# causing every connection to be lost from PostgreSQL. skip-name-resolve ensures
+# the general.log always contains the raw client IP, not a PTR record.
+skip-name-resolve = 1
+
+# ─── Resource reduction ────────────────────────────────────────────────────────
+# Disable performance_schema — we do not need its metrics data for deception.
+# This saves ~30–50 MB RSS, keeping us well within the 256m mem_limit.
+performance_schema = 0
+
+# ─── InnoDB tuning ─────────────────────────────────────────────────────────────
+# Reduce the InnoDB buffer pool from the 128m default to 64m.
+# The honeypot schema is tiny (~50 KB of data) and will fit entirely in 64m.
+# This further reduces RSS headroom consumption under the 256m container limit.
+innodb_buffer_pool_size = 64M
+
+# ─── Connection limits ─────────────────────────────────────────────────────────
+# Cap concurrent connections to 25. A honeypot does not need high throughput.
+# If an attacker connection-floods us, we OOM before reaching thread exhaustion.
+max_connections = 25
