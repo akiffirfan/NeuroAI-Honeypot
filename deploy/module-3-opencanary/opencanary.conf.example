@@ -1,0 +1,57 @@
+{
+    "device.node_id": "opencanary-neurocore-01",
+    "device.name": "neurocore-gpu01",
+    "logger": {
+        "class": "PyLogger",
+        "kwargs": {
+            "formatters": {
+                "plain": {
+                    "format": "%(message)s"
+                }
+            },
+            "handlers": {
+                "RotatingFileHandler": {
+                    "filename": "/var/log/opencanary/opencanary.json",
+                    "maxBytes": 52428800,
+                    "backupCount": 5,
+                    "formatter": "plain",
+                    "class": "logging.handlers.RotatingFileHandler",
+                    "level": "DEBUG",
+                    "encoding": "utf8"
+                }
+            }
+        }
+    },
+    "ftp.enabled": true,
+    "ftp.port": 21,
+    "ftp.banner": "220 (vsftpd 3.0.5)",
+    "telnet.enabled": true,
+    "telnet.port": 23,
+    "smtp.enabled": true,
+    "smtp.port": 25,
+    "smtp.banner": "220 mail.neuro.ai ESMTP Postfix (Ubuntu)",
+    "redis.enabled": true,
+    "redis.port": 6379,
+    "http.enabled": false,
+    "http.port": 80,
+    "https.enabled": false,
+    "https.port": 443,
+    "mysql.enabled": false,
+    "mysql.port": 3306,
+    "ssh.enabled": false,
+    "ssh.port": 22,
+    "git.enabled": false,
+    "git.port": 9418,
+    "rdp.enabled": false,
+    "rdp.port": 3389,
+    "sip.enabled": false,
+    "sip.port": 5060,
+    "snmp.enabled": false,
+    "snmp.port": 161,
+    "ntp.enabled": false,
+    "ntp.port": 123,
+    "tftp.enabled": false,
+    "tftp.port": 69,
+    "httpproxy.enabled": false,
+    "httpproxy.port": 8080
+}

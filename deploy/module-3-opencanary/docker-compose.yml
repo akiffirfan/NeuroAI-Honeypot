@@ -1,0 +1,86 @@
+# Module 3 — OpenCanary Multi-Protocol Honeypot
+# Standalone compose for independent deployment and verification.
+# Run from /opt/honeypot/deploy/module-3-opencanary/ after Module 2 passes all 9 checks.
+#
+# OPERATOR PREREQUISITES (do not skip):
+#   1. Module 2 verify-module-2.sh — all 8 checks must be green
+#      (Module 2 creates honeypot-net; this compose joins it as external)
+#   2. Create config dir on host (new VPS — no userns-remap, use root:root):
+#        mkdir -p ../../config/opencanary
+#        sudo chown root:root ../../config/opencanary/
+#   3. Copy and review config:
+#        cp opencanary.conf.example ../../config/opencanary/opencanary.conf
+#        # Review the file — do not use example defaults verbatim on a live system
+#   4. Chown config file:
+#        sudo chown root:root ../../config/opencanary/opencanary.conf
+#
+# IMAGE:
+#   No official Docker Hub image exists for OpenCanary. This module builds from
+#   the Dockerfile in this directory (pip install opencanary on python:3.11-slim).
+#   To rebuild after an opencanary version bump:
+#     docker compose build --no-cache
+#     docker compose up -d
+#
+# PORT EXPOSURE MODEL:
+#   These ports are bound to 127.0.0.1 (loopback) only. Internet access requires
+#   nftables DNAT rules at the host level. This is a MANUAL operator step — it is
+#   NOT applied by this compose file (same pattern as Module 2 / Cowrie).
+#
+#   REQUIRED nftables DNAT rules (new VPS — direct container-IP DNAT, preserves source IP):
+#     These rules are already included in honeypot-dnat.sh and applied by honeypot-dnat.service.
+#     Verify they are active after verify-module-3.sh passes:
+#       sudo nft list chain ip nat PREROUTING | grep -E ':(21|23|25|6379)'
+#     Expected (iif eth0 guard is mandatory — ctf-cache-1 Redis also on port 6379 internally):
+#       iif "eth0" tcp dport 21   dnat to 10.10.20.6:21
+#       iif "eth0" tcp dport 23   dnat to 10.10.20.6:23
+#       iif "eth0" tcp dport 25   dnat to 10.10.20.6:25
+#       iif "eth0" tcp dport 6379 dnat to 10.10.20.6:6379
+#   Then open ports 21, 23, 25, 6379 at the VPS provider firewall if not already open.
+#
+# PORTS NOT IN THIS COMPOSE (by design — do not add them):
+#   3306 — MySQL: owned by mariadb-lure (Module 4); real MariaDB for fingerprint fidelity
+#   5900 — VNC: DROPPED (OpenCanary VNC handshake fingerprints as OpenCanary under nmap -sV;
+#          see Section 3.4 of honeypot-project-plans.md for the full rationale)
+
+networks:
+  honeypot-net:
+    external: true    # created by Module 2; do NOT redefine — joining only
+    name: honeypot-net  # Module 2 sets name: honeypot-net explicitly; this must match exactly
+
+volumes:
+  opencanary-logs:
+    name: opencanary-logs  # canonical name — overrides compose project-name prefix so Module 5
+                           # (log-shipper) can mount it as external without knowing the project name
+    # Tailed read-only by log-shipper (Module 5). Contains opencanary.json event stream.
+
+services:
+
+  opencanary:
+    build: .    # no official Docker Hub image exists — built from Dockerfile in this directory
+    container_name: opencanary
+    restart: on-failure:5         # Compose-native max-attempts; deploy.restart_policy is Swarm-only
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE           # required to bind to privileged ports (<1024) as non-root
+    networks:
+      honeypot-net:
+        ipv4_address: 10.10.20.6  # pinned — DNAT rule in honeypot-dnat.sh targets this IP
+    ports:
+      # All ports bound to loopback only — not 0.0.0.0.
+      # Internet exposure requires nftables DNAT rules (see header comment above).
+      - "127.0.0.1:21:21"          # FTP lure — file server simulation
+      - "127.0.0.1:23:23"          # Telnet lure — legacy device simulation
+      - "127.0.0.1:25:25"          # SMTP lure — mail relay simulation
+      - "127.0.0.1:6379:6379"      # Redis lure — accidentally-exposed cache simulation
+      # 3306 NOT here — owned by mariadb-lure (Module 4); see Section 3.4 decision
+      # 5900 NOT here — VNC dropped; fingerprint risk; see Section 3.4 decision
+    volumes:
+      - opencanary-logs:/var/log/opencanary
+      - ../../config/opencanary/opencanary.conf:/etc/opencanaryd/opencanary.conf:ro
+    mem_limit: 128m
+    memswap_limit: 128m    # Twisted-based single process; 128m is generous; swap disabled — fast OOM > disk thrash
+    cpus: "0.25"           # four protocol listener threads are I/O-bound, not CPU-bound; 0.25 is sufficient
+    pids_limit: 50         # one Twisted process + listener threads + small overhead; 50 is a safe ceiling
