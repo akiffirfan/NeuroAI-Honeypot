@@ -1,0 +1,218 @@
+# Module 5 — log-shipper (Log Normalization & Event Pipeline)
+# Standalone compose for independent deployment and verification.
+# Run from /opt/honeypot/deploy/module-5-log-shipper/ after Module 4 passes all 9 checks.
+#
+# OPERATOR PREREQUISITES (do not skip):
+#   1. Module 4 verify-module-4.sh — all 9 checks must be green
+#      (Modules 1–4 created data-net, honeypot-net, and all log volumes)
+#   2. Obtain MaxMind GeoLite2 databases (free, requires registration):
+#        https://www.maxmind.com/en/geolite2/signup
+#      Download: GeoLite2-City.mmdb and GeoLite2-ASN.mmdb
+#      Create volume and load files:
+#        docker volume create geoip-data
+#        docker run --rm -v geoip-data:/geoip -v /path/to/downloads:/src alpine \
+#          sh -c 'cp /src/GeoLite2-City.mmdb /geoip/ && cp /src/GeoLite2-ASN.mmdb /geoip/'
+#        docker run --rm -v geoip-data:/geoip alpine ls -lh /geoip/
+#   3. Create the archive directory on the host for disk spool:
+#        mkdir -p /opt/honeypot/services/log-shipper/archive/spool
+#        sudo chown -R 100000:100000 /opt/honeypot/services/log-shipper/
+#   4. Copy and populate the .env file:
+#        cp .env.example .env && chmod 600 .env
+#        # Edit .env — set POSTGRES_PASSWORD (must match Module 1 .env)
+#        #             set REDIS_PASSWORD (must match config/redis/redis.conf requirepass)
+#        #             set HONEYDASH_SENSOR_KEY (must match /opt/honeydash/backend/.env SENSOR_API_KEY)
+#   5. Build and start:
+#        docker compose up -d --build
+#   6. Run: bash verify-module-5.sh — all checks must pass
+#
+# NETWORK MODEL:
+#   log-shipper joins TWO networks:
+#   - honeypot-net (internal: false) — to reach HoneyDash via host.docker.internal
+#     NOTE: honeypot-net is internal: false because Cowrie (Module 2) required
+#     internet egress. The extra_hosts trick requires a non-internal bridge to
+#     resolve host.docker.internal reliably. log-shipper has no ports published
+#     on this network — it is outbound-only to HoneyDash at port 8000.
+#   - data-net (internal: true) — to reach postgres:5432 and redis:6379
+#   No ports are published on the host — log-shipper is entirely internal.
+#
+# VOLUME MOUNT MODEL (all log volumes are READ-ONLY):
+#   - cowrie-logs     → /var/log/cowrie     (Cowrie JSON event stream)
+#   - opencanary-logs → /var/log/opencanary (OpenCanary JSON event stream)
+#   - mariadb-logs    → /var/log/mariadb    (MariaDB general query log)
+#   - geoip-data      → /geoip              (MaxMind GeoLite2 databases, read-only)
+#   - bind-mount      → /archive            (disk spool for Postgres backpressure)
+#
+# SECURITY NOTES:
+#   - no-new-privileges:true prevents the Python process from gaining capabilities
+#   - cap_drop: [ALL] — log-shipper is a pure-userspace Python service, needs zero caps
+#   - No ports published — this container is never directly accessible
+#   - The /archive bind-mount is the ONLY writable external path; it lives in a
+#     non-internet-reachable host directory (/opt/honeypot/services/log-shipper/archive/)
+#
+# IMAGE PINNING (do this before production goes live):
+#   This compose uses 'python:3.12-slim' — mutable. Before traffic is live, pin:
+#     docker pull python:3.12-slim
+#     docker inspect python:3.12-slim --format '{{index .RepoDigests 0}}'
+#   Then replace the image tag in the Dockerfile with the SHA digest.
+#   The log-shipper is not internet-exposed, so the risk of mutable tags is lower
+#   than for Cowrie/MariaDB, but pinning is still recommended for reproducibility.
+
+networks:
+  honeypot-net:
+    external: true       # created by Module 2; do NOT redefine — joining only
+    name: honeypot-net   # must match exactly what Module 2 set
+
+  data-net:
+    external: true       # created by Module 1; do NOT redefine — joining only
+    name: data-net       # must match exactly what Module 1 set
+
+volumes:
+  cowrie-logs:
+    external: true       # created by Module 2
+    name: cowrie-logs
+
+  opencanary-logs:
+    external: true       # created by Module 3
+    name: opencanary-logs
+
+  mariadb-logs:
+    external: true       # created by Module 4
+    name: mariadb-logs
+
+  geoip-data:
+    name: geoip-data     # operator must populate manually (see prerequisites above)
+
+services:
+
+  log-shipper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: log-shipper
+    restart: on-failure:5        # Compose-native max-attempts; deploy.restart_policy is Swarm-only
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH          # allows traversing directories and reading files owned by other UIDs;
+                                 # required because MariaDB creates general.log as mysql user (UID 999)
+                                 # and cap_drop:ALL removes DAC_OVERRIDE so container root can't bypass
+                                 # permission checks without this. Read-only tailer — no write risk.
+    networks:
+      - honeypot-net             # provides host-gateway route to HoneyDash at host:8000
+      - data-net                 # provides access to postgres and redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      # Resolves via honeypot-net (internal: false) default route to reach HoneyDash
+      # on host port 8000. The internal: false bridge installs a default route to the
+      # host gateway; internal: true bridges (data-net) do not. CRITICAL: do not remove
+      # honeypot-net from this service or host.docker.internal resolution will fail.
+    volumes:
+      # Log sources — ALL mounted read-only; log-shipper must NEVER write to sensor volumes
+      - cowrie-logs:/var/log/cowrie:ro
+      - opencanary-logs:/var/log/opencanary:ro
+      - mariadb-logs:/var/log/mariadb:ro
+      # GeoIP databases — read-only; operator populates geoip-data volume manually
+      - geoip-data:/geoip:ro
+      # Disk spool for backpressure — writable; lives under /opt/honeypot/services/log-shipper/archive/
+      # Operator must: mkdir -p /opt/honeypot/services/log-shipper/archive/spool
+      #                sudo chown -R 100000:100000 /opt/honeypot/services/log-shipper/
+      - ../../services/log-shipper/archive/:/archive/
+    env_file:
+      - .env
+    environment:
+      # PostgreSQL — DSN uses the 'honeypot' user created by Module 1 init SQL
+      # POSTGRES_PASSWORD is loaded from .env (must match Module 1 .env value)
+      - POSTGRES_DSN=postgresql://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeypot
+
+      # Redis — internal event bus on data-net; NEVER the OpenCanary fake Redis on honeypot-net
+      # REDIS_PASSWORD must match the requirepass in /opt/honeypot/config/redis/redis.conf
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+
+      # GeoIP database paths inside the container (mounted from geoip-data volume)
+      - GEOIP_DB=/geoip/GeoLite2-City.mmdb
+      - GEOIP_ASN_DB=/geoip/GeoLite2-ASN.mmdb
+
+      # HoneyDash ingest — reaches HoneyDash stack on host via host.docker.internal
+      # HONEYDASH_SENSOR_KEY must match SENSOR_API_KEY in /opt/honeydash/backend/.env
+      # CRIT-R9-3 fix: default is empty (disabled) — operator must explicitly set HONEYDASH_URL
+      # in .env to enable outbound push. A non-empty default would silently push data to an
+      # external host on every fresh deployment before the operator has reviewed the target URL.
+      - HONEYDASH_URL=${HONEYDASH_URL:-}
+      - SENSOR_API_KEY=${HONEYDASH_SENSOR_KEY}
+
+      # Sensor instance names — appear in HoneyDash's sensor_name field
+      - SENSOR_NAME_COWRIE=neuro-cowrie-01
+      - SENSOR_NAME_OPENCANARY=neuro-opencanary-01
+      - SENSOR_NAME_API=neuro-api-01
+
+      # Flush parameters — flush to HoneyDash every N seconds OR when M events accumulate
+      - BATCH_SIZE=20
+      - FLUSH_INTERVAL=5
+
+      # Log paths inside the container
+      - COWRIE_LOG=/var/log/cowrie/cowrie.json
+      - OPENCANARY_LOG=/var/log/opencanary/opencanary.json
+      - MARIADB_LOG=/var/log/mariadb/general.log
+
+      # Disk spool path for write-through queue overflow
+      - SPOOL_DIR=/archive/spool
+
+      # Telegram alerting is handled exclusively by the sentinel container.
+      # Do NOT pass TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID here — log-shipper's
+      # internal alert thread must stay disabled to avoid duplicate notifications.
+      - TELEGRAM_BOT_TOKEN=
+      - TELEGRAM_CHAT_ID=
+      - ALERT_COOLDOWN_SECS=${ALERT_COOLDOWN_SECS:-60}
+
+      # Python unbuffered output — ensures logs are visible immediately in docker logs
+      - PYTHONUNBUFFERED=1
+    mem_limit: 256m
+    # No memswap_limit — log-shipper is not internet-exposed; moderate swap during backlog
+    # drains is preferable to data loss from OOM during a Postgres outage.
+    # Budget: Python runtime ~60m + GeoLite2-City mmap ~70m + ASN DB mmap ~10m +
+    #         write buffer ~70m + spool headroom ~46m = 256m
+    cpus: "0.5"              # kept at 0.5 — must drain backlogs from 4 sensors during flood
+    pids_limit: 50           # single-process Python + watchdog threads; 50 is ample
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:9100/healthz', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Sentinel — standalone Telegram alerter
+  # Polls PostgreSQL for high-value events and sends Telegram notifications.
+  # Completely independent of log-shipper internals.
+  # ---------------------------------------------------------------------------
+  sentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["python", "-u", "/app/src/sentinel.py"]
+    container_name: sentinel
+    restart: on-failure:5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - honeypot-net             # provides default route for outbound Telegram API calls
+      - data-net                 # provides access to postgres:5432
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DSN=postgresql://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeypot
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - ALERT_COOLDOWN_SECS=${ALERT_COOLDOWN_SECS:-60}
+      - POLL_INTERVAL=${POLL_INTERVAL:-10}
+      - PYTHONUNBUFFERED=1
+    mem_limit: 64m
+    cpus: "0.1"
+    pids_limit: 20

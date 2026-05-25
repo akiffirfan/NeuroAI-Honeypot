@@ -1,0 +1,31 @@
+# =============================================================================
+# log-shipper Python dependencies
+# Neuro Honeypot Platform — Module 5
+#
+# All versions are pinned to avoid silent regressions on Docker image rebuilds.
+# To update: pip install --upgrade <package> && pip freeze | grep <package>
+# Run the full verify-module-5.sh after any dependency update.
+# =============================================================================
+
+# PostgreSQL async driver — psycopg2-binary includes the compiled C extension
+# without requiring libpq-dev at runtime (binary wheel handles it).
+psycopg2-binary==2.9.10
+
+# Redis client — hiredis parser for lower-latency stream XADD operations.
+redis==5.2.1
+hiredis==3.1.1
+
+# MaxMind GeoIP2 client — reads GeoLite2-City.mmdb and GeoLite2-ASN.mmdb
+# geoip2 mmap's the database files; re-opening per lookup is NOT correct.
+geoip2==4.8.1
+
+# File watching library — uses inotify on Linux for efficient tail-without-polling.
+# Falls back to OS-agnostic polling if inotify is unavailable.
+watchdog==6.0.0
+
+# HTTP client for HoneyDash ingest push (synchronous, simple, no external deps).
+# requests is used in a background thread to keep the async event loop clear.
+requests==2.32.3
+
+# Structured logging — outputs JSON log lines to stdout for docker logs / syslog.
+structlog==25.1.0
