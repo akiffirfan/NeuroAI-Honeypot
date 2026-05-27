@@ -1,0 +1,148 @@
+# Module 7 — Nginx (OpenResty TLS termination + reverse proxy)
+# Standalone compose for independent deployment and verification.
+# Run from /opt/honeypot/deploy/module-7-nginx/ after Module 6 passes all 10 checks.
+#
+# OPERATOR PREREQUISITES (do not skip):
+#   1. Module 6 verify-module-6.sh — all 10 checks must be green
+#      (honeypot-api must be running before nginx can proxy to it)
+#   2. Create host config directory and set ownership:
+#        sudo mkdir -p /opt/honeypot/config/nginx
+#        sudo chown -R 100000:100000 /opt/honeypot/config/nginx/
+#   3. Initial cert issuance — TWO-PHASE STARTUP (read carefully):
+#
+#      PHASE 1 — HTTP-only start (no TLS cert yet):
+#        sudo cp /opt/honeypot/deploy/module-7-nginx/config/neuro-http-only.conf \
+#                /opt/honeypot/config/nginx/neuro.conf
+#        sudo chown 100000:100000 /opt/honeypot/config/nginx/neuro.conf
+#        docker compose up -d
+#        # Verify nginx is serving HTTP before continuing:
+#        curl -s http://neurodata.me/          # should return "Neuro — cert provisioning in progress"
+#
+#      PHASE 2 — Issue the TLS certificate via certbot:
+#        docker run --rm \
+#          -v certbot-certs:/etc/letsencrypt \
+#          -v certbot-webroot:/var/www/certbot \
+#          certbot/certbot certonly \
+#          --webroot \
+#          --webroot-path /var/www/certbot \
+#          --non-interactive \
+#          --agree-tos \
+#          --email admin@neurodata.me \
+#          --domain neurodata.me
+#        # (neurodata.me DNS must already resolve to VPS IP before running this)
+#        # (ports 80 and 443 must already be open at the DigitalOcean cloud firewall panel)
+#
+#      PHASE 3 — Switch to the full TLS config:
+#        sudo cp /opt/honeypot/deploy/module-7-nginx/config/neuro.conf \
+#                /opt/honeypot/config/nginx/neuro.conf
+#        sudo chown 100000:100000 /opt/honeypot/config/nginx/neuro.conf
+#        docker exec nginx openresty -s reload
+#        # Verify: curl -sk https://neurodata.me/health  →  ok
+#
+#   4. Run: bash verify-module-7.sh — all checks must pass
+#
+#   5. Run: bash verify-module-7.sh — all 10 checks must pass
+#
+# DO NOT open ports 80/443 at the DigitalOcean cloud firewall panel until after
+# Phase 1 (nginx running) AND Phase 2 (cert issued) are complete. Opening ports
+# before nginx is up will trigger Let's Encrypt rate-limit failures (failed
+# challenge attempts count against your domain's weekly cert request quota).
+# Practical order: (a) nginx up in HTTP-only mode, (b) open 80+443 at DO panel,
+# (c) run certbot one-off, (d) switch to TLS config.
+#
+# NO DNAT RULES ARE NEEDED FOR THIS MODULE.
+# Ports 80 and 443 are published directly by Docker — no nftables DNAT required.
+# This differs from SSH/FTP/Telnet/SMTP/Redis/MySQL which all use DNAT-to-loopback.
+# Nginx is the only module that publishes ports directly to all interfaces.
+#
+# NETWORK MODEL:
+#   nginx joins honeypot-net only.
+#   honeypot-net is internal: false (created by Module 2 with this setting to allow
+#   Cowrie's loopback port binding). Because honeypot-net is non-internal, Docker
+#   installs a default route to the host gateway on that bridge — so
+#   extra_hosts: host-gateway works correctly on honeypot-net without a separate
+#   egress-net. The master compose adds nginx to egress-net as well, but the
+#   standalone compose uses honeypot-net only for simplicity.
+#
+# SERVER HEADER OVERRIDE (why OpenResty instead of stock nginx):
+#   Stock nginx:alpine sets the `Server` header in nginx core; `add_header Server`
+#   is silently ignored. OpenResty ships with the `ngx_headers_more` module which
+#   provides `more_set_headers "Server: uvicorn/0.24.0"` — this replaces the Server
+#   header on ALL response codes (2xx, 3xx, 4xx, 5xx). Without this, the response
+#   would leak `Server: openresty/X.Y.Z` and defeat the deception legend.
+#
+# IMAGE PINNING (before production goes live):
+#   docker pull openresty/openresty:alpine
+#   docker inspect openresty/openresty:alpine --format '{{index .RepoDigests 0}}'
+#   Substitute: image: openresty/openresty@sha256:<64-hex-chars>
+
+networks:
+  honeypot-net:
+    external: true       # created by Module 2; do NOT redefine — joining only
+    name: honeypot-net   # canonical name — must match exactly what Module 2 set
+
+volumes:
+  certbot-certs:
+    name: certbot-certs        # canonical name; populated by certbot one-off container (see prerequisites)
+  certbot-webroot:
+    name: certbot-webroot      # canonical name; nginx serves /.well-known/acme-challenge/ from here
+
+services:
+
+  nginx:
+    # OpenResty = nginx + LuaJIT + ngx_headers_more + other modules.
+    # ngx_headers_more provides more_set_headers which can override the nginx-internal
+    # Server header. Stock nginx:alpine cannot do this.
+    image: openresty/openresty:alpine
+    container_name: nginx
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE  # required to bind ports 80 and 443 as non-root
+      - CHOWN             # required by nginx master process to set worker process file ownership
+      - SETUID            # required by nginx master to drop privileges to worker user (nobody/nginx)
+      - SETGID            # same as SETUID
+      # To eliminate CHOWN/SETUID/SETGID: pre-chown all config files to UID 101 (nginx worker)
+      # and run openresty with `user 101 101;` in nginx.conf — test on each image upgrade.
+    networks:
+      - honeypot-net      # internal: false — provides route to honeypot-api AND host-gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      # Resolves via honeypot-net (internal: false) default route.
+      # Not currently used — HoneyDash is hosted externally on collaborator's domain.
+      # Kept for forward compatibility if HoneyDash is ever co-located on this host.
+    ports:
+      - "0.0.0.0:80:80"   # HTTP — ACME challenge + redirect to HTTPS; published to all interfaces
+      - "443:443"         # HTTPS — TLS termination for neurodata.me
+    volumes:
+      # Nginx config — bind-mounted read-only from host.
+      # OpenResty alpine's nginx.conf includes from /etc/nginx/conf.d/ (confirmed via docker exec).
+      # The operator copies neuro-http-only.conf first, then neuro.conf after cert issuance.
+      - ../../config/nginx/:/etc/nginx/conf.d/:ro
+
+      # TLS certificates written by certbot, read by nginx.
+      # certbot-certs is populated by the certbot one-off container (prerequisite step 3).
+      # :ro — nginx only reads certs; certbot writes to this volume independently.
+      - certbot-certs:/etc/letsencrypt:ro
+
+      # ACME webroot — certbot writes challenge tokens here during cert issuance/renewal.
+      # nginx serves /.well-known/acme-challenge/ from this path.
+      # :ro — nginx only reads challenge files; certbot writes them.
+      - certbot-webroot:/var/www/certbot:ro
+    mem_limit: 64m
+    memswap_limit: 64m        # equals mem_limit — OOM-kill over swap thrash under HTTP flood
+                              # nginx is the primary internet-facing surface; swap would increase
+                              # attacker dwell time during a DoS flood
+    cpus: "0.5"               # two worker processes; 0.5 vCPU is ample for proxy workload
+    pids_limit: 100           # master + 2 workers + cache manager + cache loader ≈ 10 PIDs;
+                              # 100 is a hard ceiling against HTTP/2 RST-stream fork-storm attacks
+                              # (CVE-2023-44487 Rapid Reset — pids_limit is the backstop)
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s       # openresty starts fast; 10s covers config parse + worker spawn
