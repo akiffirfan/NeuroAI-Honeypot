@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block title %}Sign in — Neuro AI Platform{% endblock %}
+
+{% block body %}
+<!--
+  Neuro Auth Service v2.3.1
+  FastAPI backend: /api/v1/auth
+  TODO: remove debug mode before next deployment sprint (m.chen @ 2026-04-28)
+  TODO: rotate service account key in .env — still using dev key (m.chen @ 2026-04-28)
+-->
+
+<!-- Background glow orbs for depth -->
+<div class="glow-orb w-96 h-96 bg-indigo-600/20 top-[-10%] left-[-5%]"></div>
+<div class="glow-orb w-80 h-80 bg-violet-700/10 bottom-[-5%] right-[5%]"></div>
+
+<!-- Forgot password modal -->
+<div id="forgot-modal" class="hidden fixed inset-0 z-30 flex items-center justify-center px-4">
+  <div class="absolute inset-0 bg-canvas/80 backdrop-blur-sm" onclick="closeForgotModal()"></div>
+  <div class="relative w-full max-w-[360px] bg-surface border border-border rounded-2xl shadow-card p-6">
+    <div class="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-indigo-500/40 to-transparent rounded-full"></div>
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Reset your password</h3>
+      <button onclick="closeForgotModal()" class="text-faint hover:text-muted transition-colors">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <p class="text-xs text-muted mb-4 leading-relaxed">Enter your work email address and we'll send you a link to reset your password.</p>
+
+    <div id="forgot-form-wrap">
+      <div class="space-y-3">
+        <input
+          id="forgot-email"
+          type="email"
+          autocomplete="email"
+          placeholder="you@neuro.ai"
+          class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+        >
+        <button
+          id="forgot-submit-btn"
+          onclick="submitForgotPassword()"
+          class="w-full bg-accent hover:bg-accent-dim active:scale-[0.99] text-white rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-150 flex items-center justify-center gap-2">
+          <span id="forgot-btn-text">Send reset link</span>
+          <span id="forgot-spinner" class="hidden">
+            <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <div id="forgot-success" class="hidden flex items-start gap-2.5 p-3.5 bg-success/10 border border-success/20 rounded-xl text-xs text-success">
+      <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <span>If this address matches an account, you'll receive an email shortly.</span>
+    </div>
+  </div>
+</div>
+
+<div class="bg-grid min-h-screen flex flex-col items-center justify-center px-4 relative z-10">
+
+  <!-- Top wordmark / nav strip -->
+  <div class="absolute top-0 left-0 right-0 px-8 py-5 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <!-- Neuro logo mark -->
+      <svg class="w-7 h-7" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="28" height="28" rx="6" fill="#6366f1" fill-opacity="0.12"/>
+        <circle cx="14" cy="14" r="4.5" stroke="#6366f1" stroke-width="1.6" fill="none"/>
+        <circle cx="14" cy="14" r="1.8" fill="#6366f1"/>
+        <line x1="14" y1="2" x2="14" y2="8" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="14" y1="20" x2="14" y2="26" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="2" y1="14" x2="8" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="20" y1="14" x2="26" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="4.9" y1="4.9" x2="9.2" y2="9.2" stroke="#6366f1" stroke-width="1.1" stroke-linecap="round" opacity="0.6"/>
+        <line x1="18.8" y1="18.8" x2="23.1" y2="23.1" stroke="#6366f1" stroke-width="1.1" stroke-linecap="round" opacity="0.6"/>
+        <line x1="23.1" y1="4.9" x2="18.8" y2="9.2" stroke="#6366f1" stroke-width="1.1" stroke-linecap="round" opacity="0.6"/>
+        <line x1="9.2" y1="18.8" x2="4.9" y2="23.1" stroke="#6366f1" stroke-width="1.1" stroke-linecap="round" opacity="0.6"/>
+      </svg>
+      <span class="text-white font-semibold tracking-tight">neuro</span>
+      <span class="text-faint text-sm font-light">AI Platform</span>
+    </div>
+    <div class="flex items-center gap-1.5">
+      <span class="w-1.5 h-1.5 rounded-full bg-success pulse inline-block"></span>
+      <span class="text-xs text-muted">All systems operational</span>
+    </div>
+  </div>
+
+  <!-- Auth card -->
+  <div class="w-full max-w-[380px]">
+
+    <!-- Card header -->
+    <div class="mb-7 text-center">
+      <h1 class="text-2xl font-semibold text-white tracking-tight">Sign in to Neuro</h1>
+      <p class="text-sm text-muted mt-1.5">Neuro AI Infrastructure — Internal access only</p>
+    </div>
+
+    <div class="bg-surface border border-border rounded-2xl shadow-card p-7 relative">
+      <!-- Subtle top-edge accent line -->
+      <div class="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-indigo-500/40 to-transparent rounded-full"></div>
+
+      <!-- Primary: email + password fields -->
+      <form id="local-form" class="space-y-4" onsubmit="doLocalLogin(event)" autocomplete="on">
+
+        <div>
+          <label for="local-email" class="block text-xs font-medium text-muted mb-1.5">Work email</label>
+          <input
+            id="local-email"
+            type="email"
+            name="email"
+            autocomplete="email"
+            placeholder="you@neuro.ai"
+            class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label for="local-password" class="block text-xs font-medium text-muted">Password</label>
+            <a href="/auth/forgot-password" id="forgot-link" class="text-xs text-accent hover:text-indigo-300 transition-colors">Forgot password?</a>
+          </div>
+          <input
+            id="local-password"
+            type="password"
+            name="password"
+            autocomplete="current-password"
+            placeholder="••••••••"
+            class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+        </div>
+
+        <!-- Error / lockout states -->
+        <div id="login-error" class="hidden flex items-start gap-2.5 p-3 bg-danger/8 border border-danger/20 rounded-xl text-xs text-red-300">
+          <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          <span id="login-error-text">Invalid credentials. Please try again.</span>
+        </div>
+        <div id="login-lockout" class="hidden flex items-start gap-2.5 p-3 bg-warn/8 border border-warn/20 rounded-xl text-xs text-yellow-300">
+          <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+          </svg>
+          <span>Account temporarily locked after multiple failed attempts. Contact <span class="font-mono text-yellow-200">#ai-infra</span> on Slack.</span>
+        </div>
+
+        <button
+          id="login-btn"
+          type="submit"
+          class="w-full bg-accent hover:bg-accent-dim active:scale-[0.99] text-white rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-150 flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50">
+          <span id="login-btn-text">Sign in</span>
+          <span id="login-spinner" class="hidden">
+            <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+          </span>
+        </button>
+
+      </form>
+
+      <!-- Divider -->
+      <div class="flex items-center gap-3 my-5">
+        <div class="flex-1 h-px bg-border"></div>
+        <span class="text-xs text-faint select-none">or</span>
+        <div class="flex-1 h-px bg-border"></div>
+      </div>
+
+      <!-- Secondary: Google Workspace SSO -->
+      <button
+        id="sso-btn"
+        type="button"
+        onclick="trySso()"
+        class="w-full group flex items-center gap-3 bg-elevated hover:bg-overlay border border-border hover:border-faint rounded-xl px-4 py-3 text-sm font-medium text-gray-200 transition-all duration-150 focus-visible:ring-2 focus-visible:ring-indigo-500/50">
+        <!-- Google logo -->
+        <svg class="flex-shrink-0 w-5 h-5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+          <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+          <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+          <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+        </svg>
+        <span class="flex-1 text-left">Continue with Google Workspace</span>
+        <span id="sso-spinner" class="hidden">
+          <svg class="animate-spin w-4 h-4 text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+        </span>
+        <svg id="sso-arrow" class="w-4 h-4 text-faint group-hover:text-muted transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+        </svg>
+      </button>
+
+      <!-- SSO unreachable notice -->
+      <div id="sso-error" class="hidden mt-3 flex items-start gap-2.5 p-3 bg-danger/8 border border-danger/20 rounded-xl text-xs text-red-300">
+        <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <span>Identity provider unavailable. Contact <span class="font-mono text-red-200">#ai-infra</span> on Slack.</span>
+      </div>
+
+    </div>
+
+    <!-- Footer links -->
+    <div class="mt-5 text-center space-y-2">
+      <p class="text-xs text-faint">
+        By signing in you agree to the
+        <a href="/legal/tos" class="text-muted hover:text-gray-300 underline underline-offset-2 transition-colors">Terms of Service</a>
+        and
+        <a href="/legal/privacy" class="text-muted hover:text-gray-300 underline underline-offset-2 transition-colors">Privacy Policy</a>
+      </p>
+      <p class="text-xs text-faint/50 font-mono">
+        Neuro v2.3.1 &middot; build 20260428 &middot; &copy; 2025 Neuro Inc.
+      </p>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/auth.js"></script>
+<script>
+  let failCount = 0;
+
+  async function trySso() {
+    const btn = document.getElementById('sso-btn');
+    const spinner = document.getElementById('sso-spinner');
+    const arrow = document.getElementById('sso-arrow');
+    btn.disabled = true;
+    btn.classList.add('opacity-70');
+    spinner.classList.remove('hidden');
+    arrow.classList.add('hidden');
+
+    try {
+      await fetch('/api/v1/auth/sso/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'google' }),
+      });
+    } catch (_) {}
+
+    spinner.classList.add('hidden');
+    arrow.classList.remove('hidden');
+    btn.disabled = false;
+    btn.classList.remove('opacity-70');
+    document.getElementById('sso-error').classList.remove('hidden');
+  }
+
+  document.getElementById('forgot-link').addEventListener('click', function(e) {
+    e.preventDefault();
+    openForgotModal();
+  });
+
+  function openForgotModal() {
+    const modal = document.getElementById('forgot-modal');
+    modal.classList.remove('hidden');
+    document.getElementById('forgot-form-wrap').classList.remove('hidden');
+    document.getElementById('forgot-success').classList.add('hidden');
+    document.getElementById('forgot-email').value = document.getElementById('local-email').value || '';
+    setTimeout(function() { document.getElementById('forgot-email').focus(); }, 80);
+  }
+
+  function closeForgotModal() {
+    document.getElementById('forgot-modal').classList.add('hidden');
+  }
+
+  function submitForgotPassword() {
+    const btn = document.getElementById('forgot-submit-btn');
+    const btnText = document.getElementById('forgot-btn-text');
+    const spinner = document.getElementById('forgot-spinner');
+    btn.disabled = true;
+    btnText.classList.add('hidden');
+    spinner.classList.remove('hidden');
+
+    setTimeout(function() {
+      document.getElementById('forgot-form-wrap').classList.add('hidden');
+      document.getElementById('forgot-success').classList.remove('hidden');
+    }, 1400 + Math.random() * 600);
+  }
+
+  async function doLocalLogin(e) {
+    e.preventDefault();
+    const email = document.getElementById('local-email').value.trim();
+    const password = document.getElementById('local-password').value;
+    const errEl = document.getElementById('login-error');
+    const errText = document.getElementById('login-error-text');
+    const lockoutEl = document.getElementById('login-lockout');
+    const spinner = document.getElementById('login-spinner');
+    const btnText = document.getElementById('login-btn-text');
+    const btn = document.getElementById('login-btn');
+
+    errEl.classList.add('hidden');
+    lockoutEl.classList.add('hidden');
+    spinner.classList.remove('hidden');
+    btnText.textContent = 'Signing in…';
+    btn.disabled = true;
+
+    try {
+      const resp = await fetch('/api/v1/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, password: password }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        btnText.textContent = 'Redirecting…';
+        window.location.href = data.redirect || '/dashboard';
+        return;
+      }
+
+      spinner.classList.add('hidden');
+      btnText.textContent = 'Sign in';
+      btn.disabled = false;
+      failCount++;
+
+      if (failCount >= 3) {
+        lockoutEl.classList.remove('hidden');
+      } else {
+        errText.textContent = 'Invalid email or password.';
+        errEl.classList.remove('hidden');
+        const pwField = document.getElementById('local-password');
+        pwField.style.animation = 'none';
+        pwField.offsetHeight;
+        pwField.style.animation = 'shake 0.3s ease';
+      }
+    } catch (_) {
+      spinner.classList.add('hidden');
+      btnText.textContent = 'Sign in';
+      btn.disabled = false;
+      errText.textContent = 'Network error. Please try again.';
+      errEl.classList.remove('hidden');
+    }
+  }
+</script>
+<style>
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-5px); }
+    40% { transform: translateX(5px); }
+    60% { transform: translateX(-3px); }
+    80% { transform: translateX(3px); }
+  }
+</style>
+{% endblock %}

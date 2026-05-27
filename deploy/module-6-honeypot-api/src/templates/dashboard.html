@@ -1,0 +1,1211 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — Neuro{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block body %}
+<!--
+  Neuro Dashboard v2.3.1
+  Auth gate bypassed via ?ref=sso_bypass — known issue, IT#5117
+  Direct DB auth fallback: /api/v1/auth/direct?bypass=true (deprecate after SSO rollout)
+  TODO: fix auth middleware before next sprint (m.chen @ 2026-04-28)
+-->
+<div class="flex h-screen bg-canvas overflow-hidden">
+
+  <!-- ================================================================
+       SIDEBAR
+  ================================================================ -->
+  <aside class="w-[220px] flex-shrink-0 bg-surface border-r border-border flex flex-col select-none" style="position:relative;">
+
+    <!-- Logo / workspace area (clickable → workspace dropdown) -->
+    <div class="px-4 py-4 border-b border-border cursor-pointer hover:bg-elevated transition-colors" onclick="toggleWorkspaceDropdown(event)" style="position:relative;">
+      <div class="flex items-center gap-2.5">
+        <svg class="w-6 h-6 flex-shrink-0" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="28" height="28" rx="6" fill="#6366f1" fill-opacity="0.12"/>
+          <circle cx="14" cy="14" r="4.5" stroke="#6366f1" stroke-width="1.6" fill="none"/>
+          <circle cx="14" cy="14" r="1.8" fill="#6366f1"/>
+          <line x1="14" y1="2" x2="14" y2="8" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="14" y1="20" x2="14" y2="26" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="2" y1="14" x2="8" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="20" y1="14" x2="26" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-1.5">
+            <span class="text-white font-semibold text-sm tracking-tight">neuro</span>
+            <span class="text-[10px] font-mono text-faint bg-elevated border border-border px-1.5 py-0.5 rounded">v2.3</span>
+          </div>
+          <p class="text-[10px] text-faint truncate">Neuro AI — Production</p>
+        </div>
+        <svg class="w-3 h-3 text-faint flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Workspace dropdown -->
+    <div id="workspace-dropdown" class="dropdown-panel hidden" style="top:68px;left:8px;right:8px;">
+      <button class="dropdown-item w-full" onclick="event.stopPropagation()">
+        <svg class="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>
+        <span style="color:#e5e7eb;">Neuro AI — Production</span>
+      </button>
+      <button class="dropdown-item w-full" onclick="event.stopPropagation()">
+        <span style="width:0.875rem;flex-shrink:0;"></span>
+        Neuro AI — Staging
+      </button>
+      <div style="height:1px;background:var(--c-border);margin:0.375rem 0.5rem;"></div>
+      <button class="dropdown-item w-full" onclick="event.stopPropagation()">
+        <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        Workspace settings
+      </button>
+      <button class="dropdown-item w-full" onclick="event.stopPropagation()">
+        <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/>
+        </svg>
+        Invite members
+      </button>
+      <button class="dropdown-item w-full" onclick="event.stopPropagation()">
+        <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>
+        </svg>
+        Switch workspace
+      </button>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="flex-1 px-2 py-3 overflow-y-auto" style="display:flex;flex-direction:column;gap:0.125rem;">
+      <p class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-faint">Training</p>
+
+      <button class="nav-item active" id="nav-overview" onclick="switchTab('overview')">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 13a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1h-4a1 1 0 01-1-1v-6z"/>
+        </svg>
+        Overview
+      </button>
+
+      <button class="nav-item" id="nav-runs" onclick="switchTab('runs')">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+        Runs
+        <span class="ml-auto text-[10px] font-mono bg-success/15 text-success px-1.5 py-0.5 rounded-full">3</span>
+      </button>
+
+      <button class="nav-item" id="nav-models" onclick="switchTab('models')">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/>
+        </svg>
+        Models
+      </button>
+
+      <button class="nav-item" id="nav-datasets" onclick="switchTab('datasets')">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
+        </svg>
+        Datasets
+      </button>
+
+      <button class="nav-item" id="nav-pipelines" onclick="switchTab('pipelines')">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+        </svg>
+        Pipelines
+      </button>
+
+      <div style="height:1px;background:var(--c-border);margin:0.5rem 0.25rem;"></div>
+      <p class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-faint">System</p>
+
+      <a href="/admin" class="nav-item">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        Admin
+      </a>
+    </nav>
+
+    <!-- User profile area (clickable → user popup) -->
+    <div class="p-3 border-t border-border" style="position:relative;">
+      <button class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-elevated transition-colors text-left" onclick="toggleUserPopup(event)">
+        <div class="w-7 h-7 rounded-lg bg-indigo-500/30 border border-indigo-500/40 flex items-center justify-center text-xs font-bold text-indigo-300 flex-shrink-0">MC</div>
+        <div class="min-w-0 flex-1">
+          <p class="text-xs font-semibold text-gray-200 truncate">Ming Chen</p>
+          <p class="text-[10px] text-faint truncate">m.chen@neuro.ai</p>
+        </div>
+        <svg class="w-3.5 h-3.5 text-faint flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"/>
+        </svg>
+      </button>
+
+      <!-- User popup -->
+      <div id="user-popup" class="dropdown-panel hidden" style="bottom:68px;left:8px;right:8px;">
+        <div style="padding:0.5rem 0.75rem 0.375rem;">
+          <div class="flex items-center gap-2.5 mb-2">
+            <div class="w-8 h-8 rounded-lg bg-indigo-500/30 border border-indigo-500/40 flex items-center justify-center text-sm font-bold text-indigo-300 flex-shrink-0">MC</div>
+            <div class="min-w-0">
+              <p class="text-xs font-semibold text-gray-200">Ming Chen</p>
+              <p class="text-[10px] text-faint truncate">m.chen@neuro.ai</p>
+            </div>
+          </div>
+          <p class="text-[10px] text-faint">ML Lead</p>
+        </div>
+        <div style="height:1px;background:var(--c-border);margin:0.375rem 0.5rem;"></div>
+        <button class="dropdown-item w-full" onclick="event.stopPropagation();showToast('Opening profile settings...')">
+          <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+          </svg>
+          Profile settings
+        </button>
+        <a href="/api/v1/auth" class="dropdown-item" onclick="event.stopPropagation()">
+          <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+          </svg>
+          API keys
+        </a>
+        <div style="height:1px;background:var(--c-border);margin:0.375rem 0.5rem;"></div>
+        <a href="/auth/logout" class="dropdown-item" style="color:#fca5a5;" onclick="event.stopPropagation()">
+          <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+          </svg>
+          Sign out
+        </a>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ================================================================
+       MAIN CONTENT
+  ================================================================ -->
+  <div class="flex-1 flex flex-col overflow-hidden min-w-0">
+
+    <!-- Top bar -->
+    <header class="bg-surface border-b border-border px-6 py-3.5 flex items-center justify-between flex-shrink-0">
+      <div>
+        <h2 id="topbar-title" class="text-sm font-semibold text-white">Dashboard Overview</h2>
+        <p id="topbar-subtitle" class="text-[11px] text-faint font-mono">build 20260428 &middot; workspace: neuro-prod</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <!-- Cluster status badge -->
+        <div class="flex items-center gap-2 bg-elevated border border-border rounded-lg px-3 py-1.5 text-xs">
+          <span class="w-1.5 h-1.5 rounded-full bg-success pulse flex-shrink-0"></span>
+          <span class="text-muted">GPU Cluster</span>
+          <span class="font-semibold text-success">14/16 nodes</span>
+        </div>
+        <!-- Tab-context action button -->
+        <button id="topbar-action" onclick="openNewRunModal()" class="hidden flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          + New Run
+        </button>
+      </div>
+    </header>
+
+    <!-- Page content area -->
+    <main class="flex-1 overflow-y-auto">
+
+      <!-- ============================================================
+           PANEL: OVERVIEW
+      ============================================================ -->
+      <div id="panel-overview" class="p-6" style="display:block;">
+
+        <!-- KPI cards -->
+        <div class="grid grid-cols-4 gap-4 mb-5">
+
+          <div class="bg-surface border border-border rounded-xl p-4 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <p class="text-xs font-medium text-muted">Active Nodes</p>
+              <span class="w-7 h-7 rounded-lg bg-success/10 flex items-center justify-center">
+                <svg class="w-3.5 h-3.5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/>
+                </svg>
+              </span>
+            </div>
+            <p class="text-2xl font-bold text-white num">14<span class="text-base text-faint font-normal">/16</span></p>
+            <p class="text-[11px] text-muted mt-1.5"><span class="text-success font-medium">2 rebalancing</span> — gpu-node-12 pressure</p>
+          </div>
+
+          <div class="bg-surface border border-border rounded-xl p-4 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <p class="text-xs font-medium text-muted">GPU Util</p>
+              <span class="w-7 h-7 rounded-lg bg-warn/8 flex items-center justify-center">
+                <svg class="w-3.5 h-3.5 text-warn" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+                </svg>
+              </span>
+            </div>
+            <p class="text-2xl font-bold num" style="color:#fcd34d;">87.4%</p>
+            <div class="mt-2 bg-elevated rounded-full h-1.5 overflow-hidden">
+              <div class="h-full rounded-full" style="width:87.4%;background:linear-gradient(to right,#f59e0b,#fbbf24);"></div>
+            </div>
+            <p class="text-[11px] text-muted mt-1">Elevated — rebalancing in progress</p>
+          </div>
+
+          <div class="bg-surface border border-border rounded-xl p-4 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <p class="text-xs font-medium text-muted">Active Runs</p>
+              <span class="w-7 h-7 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                <svg class="w-3.5 h-3.5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+              </span>
+            </div>
+            <p class="text-2xl font-bold text-white num">3</p>
+            <p class="text-[11px] text-muted mt-1.5"><span class="text-blue-400 font-medium">run-001, run-002, run-007</span> live</p>
+          </div>
+
+          <div class="bg-surface border border-border rounded-xl p-4 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <p class="text-xs font-medium text-muted">Queue Depth</p>
+              <span class="w-7 h-7 rounded-lg bg-indigo-500/10 flex items-center justify-center">
+                <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+                </svg>
+              </span>
+            </div>
+            <p class="text-2xl font-bold text-white num">2</p>
+            <p class="text-[11px] text-muted mt-1.5"><span class="text-indigo-400 font-medium">embed-biomedcorpus, medical-ner</span></p>
+          </div>
+        </div>
+
+        <!-- Alert banner -->
+        <div class="flex items-center gap-2.5 p-3 bg-warn/8 border border-warn/25 rounded-xl text-xs text-yellow-200 mb-5">
+          <svg class="w-4 h-4 flex-shrink-0 text-warn" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+          </svg>
+          <span>Node gpu-node-12 reported elevated memory pressure (94%). Auto-rebalancing in progress.</span>
+        </div>
+
+        <!-- Loss chart -->
+        <div class="chart-container mb-5">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2.5">
+              <h3 class="text-sm font-semibold text-white">Training Loss</h3>
+              <span class="flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded" style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.25);color:#86efac;">
+                <span class="w-1.5 h-1.5 rounded-full bg-success pulse flex-shrink-0"></span>
+                LIVE
+              </span>
+            </div>
+            <p class="text-[11px] text-faint font-mono">run-001 &middot; nf-llm-70b-q4 &middot; updates every 1.2s</p>
+          </div>
+          <canvas id="loss-chart" height="90"></canvas>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="flex items-center gap-1.5 mb-3">
+          <button class="filter-btn active" data-filter="all" onclick="filterRuns('all')">All</button>
+          <button class="filter-btn" data-filter="running" onclick="filterRuns('running')">Running</button>
+          <button class="filter-btn" data-filter="failed" onclick="filterRuns('failed')">Failed</button>
+          <button class="filter-btn" data-filter="queued" onclick="filterRuns('queued')">Queued</button>
+          <button class="filter-btn" data-filter="completed" onclick="filterRuns('completed')">Completed</button>
+        </div>
+
+        <!-- Runs table (overview) -->
+        <div class="bg-surface border border-border rounded-xl overflow-hidden shadow-card">
+          <div class="px-5 py-3.5 border-b border-border flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">Training Runs</h3>
+            <button onclick="openNewRunModal()" class="flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+              </svg>
+              New Run
+            </button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead>
+                <tr class="border-b border-border bg-elevated/40">
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Run</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Model</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Status</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Started</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Duration</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Loss</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">GPU</th>
+                </tr>
+              </thead>
+              <tbody id="overview-runs-tbody" class="divide-y divide-border/50">
+                <!-- Rows injected by renderRunsTable() -->
+              </tbody>
+            </table>
+          </div>
+          <div class="px-5 py-2.5 border-t border-border bg-elevated/20">
+            <p class="text-[11px] text-faint">8 runs shown &middot; run-003 and run-008 queued pending node availability</p>
+          </div>
+        </div>
+
+      </div><!-- /panel-overview -->
+
+      <!-- ============================================================
+           PANEL: RUNS
+      ============================================================ -->
+      <div id="panel-runs" class="p-6" style="display:none;">
+
+        <!-- Filter bar -->
+        <div class="flex items-center gap-1.5 mb-4">
+          <button class="filter-btn active" data-filter="all" onclick="filterRuns('all')">All</button>
+          <button class="filter-btn" data-filter="running" onclick="filterRuns('running')">Running</button>
+          <button class="filter-btn" data-filter="failed" onclick="filterRuns('failed')">Failed</button>
+          <button class="filter-btn" data-filter="queued" onclick="filterRuns('queued')">Queued</button>
+          <button class="filter-btn" data-filter="completed" onclick="filterRuns('completed')">Completed</button>
+        </div>
+
+        <div class="bg-surface border border-border rounded-xl overflow-hidden shadow-card">
+          <div class="px-5 py-3.5 border-b border-border flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">Training Runs</h3>
+              <p class="text-[11px] text-faint mt-0.5">All training jobs in your workspace</p>
+            </div>
+            <button onclick="openNewRunModal()" class="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+              </svg>
+              + New Run
+            </button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead>
+                <tr class="border-b border-border bg-elevated/40">
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Run</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Model</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Status</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Started</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Duration</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Loss</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">GPU</th>
+                </tr>
+              </thead>
+              <tbody id="runs-panel-tbody" class="divide-y divide-border/50">
+              </tbody>
+            </table>
+          </div>
+          <div class="px-5 py-2.5 border-t border-border bg-elevated/20 flex items-center justify-between">
+            <p class="text-[11px] text-faint">8 of 8 runs shown</p>
+            <p class="text-[11px] text-faint font-mono">workspace: neuro-prod</p>
+          </div>
+        </div>
+      </div><!-- /panel-runs -->
+
+      <!-- ============================================================
+           PANEL: MODELS
+      ============================================================ -->
+      <div id="panel-models" class="p-6" style="display:none;">
+
+        <!-- Stats row -->
+        <div class="grid gap-4 mb-5" style="grid-template-columns:repeat(3,minmax(0,1fr));">
+          <div class="bg-surface border border-border rounded-xl p-4 shadow-card">
+            <p class="text-xs font-medium text-muted mb-1.5">Total Models</p>
+            <p class="text-2xl font-bold text-white num">12</p>
+          </div>
+          <div class="bg-surface border border-border rounded-xl p-4 shadow-card">
+            <p class="text-xs font-medium text-muted mb-1.5">Deployed</p>
+            <p class="text-2xl font-bold num" style="color:#86efac;">3</p>
+          </div>
+          <div class="bg-surface border border-border rounded-xl p-4 shadow-card">
+            <p class="text-xs font-medium text-muted mb-1.5">In Training</p>
+            <p class="text-2xl font-bold num" style="color:#7dd3fc;">2</p>
+          </div>
+        </div>
+
+        <!-- Model cards grid -->
+        <div class="grid gap-4" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <p class="text-sm font-semibold text-white">nf-llm-70b-q4</p>
+                <p class="text-[11px] text-faint font-mono mt-0.5">v4.1 &middot; 140.2 GB</p>
+              </div>
+              <span class="badge badge-deployed">Deployed</span>
+            </div>
+            <p class="text-[11px] text-faint font-mono truncate mb-3">s3://neuro-models-prod/llm-70b/v4/</p>
+            <div class="flex items-center justify-between">
+              <p class="text-[11px] text-muted">Created 2026-04-28</p>
+              <button onclick="openDeployModal('nf-llm-70b-q4')" class="text-xs font-medium px-2.5 py-1 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors">Deploy</button>
+            </div>
+          </div>
+
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <p class="text-sm font-semibold text-white">nf-embed-v2</p>
+                <p class="text-[11px] text-faint font-mono mt-0.5">v2.3 &middot; 3.4 GB</p>
+              </div>
+              <span class="badge badge-deployed">Deployed</span>
+            </div>
+            <p class="text-[11px] text-faint font-mono truncate mb-3">s3://neuro-models-prod/embed/v2/</p>
+            <div class="flex items-center justify-between">
+              <p class="text-[11px] text-muted">Created 2026-04-15</p>
+              <button onclick="openDeployModal('nf-embed-v2')" class="text-xs font-medium px-2.5 py-1 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors">Deploy</button>
+            </div>
+          </div>
+
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <p class="text-sm font-semibold text-white">nf-reward-v1</p>
+                <p class="text-[11px] text-faint font-mono mt-0.5">v1.7 &middot; 12.1 GB</p>
+              </div>
+              <span class="badge badge-deployed">Deployed</span>
+            </div>
+            <p class="text-[11px] text-faint font-mono truncate mb-3">s3://neuro-models-prod/reward/v1/</p>
+            <div class="flex items-center justify-between">
+              <p class="text-[11px] text-muted">Created 2026-03-30</p>
+              <button onclick="openDeployModal('nf-reward-v1')" class="text-xs font-medium px-2.5 py-1 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors">Deploy</button>
+            </div>
+          </div>
+
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <p class="text-sm font-semibold text-white">nf-vision-clip-v3</p>
+                <p class="text-[11px] text-faint font-mono mt-0.5">v3.0 &middot; 8.9 GB</p>
+              </div>
+              <span class="badge badge-archived">Archived</span>
+            </div>
+            <p class="text-[11px] text-faint font-mono truncate mb-3">s3://neuro-models-archive/clip/v3/</p>
+            <div class="flex items-center justify-between">
+              <p class="text-[11px] text-muted">Created 2026-02-14</p>
+              <button onclick="openDeployModal('nf-vision-clip-v3')" class="text-xs font-medium px-2.5 py-1 rounded-lg bg-elevated border border-border text-muted hover:bg-overlay transition-colors">Deploy</button>
+            </div>
+          </div>
+
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <p class="text-sm font-semibold text-white">nf-bert-squad</p>
+                <p class="text-[11px] text-faint font-mono mt-0.5">v2.1 &middot; 1.1 GB</p>
+              </div>
+              <span class="badge badge-training">Training</span>
+            </div>
+            <p class="text-[11px] text-faint font-mono truncate mb-3">s3://neuro-models-prod/bert/squad/v2/</p>
+            <div class="flex items-center justify-between">
+              <p class="text-[11px] text-muted">Created 2026-05-24</p>
+              <button onclick="showToast('Cannot deploy model in training state.')" class="text-xs font-medium px-2.5 py-1 rounded-lg bg-elevated border border-border text-muted cursor-not-allowed">Deploy</button>
+            </div>
+          </div>
+
+        </div>
+      </div><!-- /panel-models -->
+
+      <!-- ============================================================
+           PANEL: DATASETS
+      ============================================================ -->
+      <div id="panel-datasets" class="p-6" style="display:none;">
+
+        <div class="bg-surface border border-border rounded-xl overflow-hidden shadow-card">
+          <div class="px-5 py-3.5 border-b border-border">
+            <h3 class="text-sm font-semibold text-white">Dataset Registry</h3>
+            <p class="text-[11px] text-faint mt-0.5">Training and evaluation datasets</p>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead>
+                <tr class="border-b border-border bg-elevated/40">
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Name</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Type</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Size</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Classification</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Location</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Modified</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Action</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border/50">
+                <tr class="data-row">
+                  <td class="px-5 py-3.5 text-sm text-gray-200 font-mono text-xs">biometric_auth_training_set.parquet</td>
+                  <td class="px-5 py-3.5 text-xs text-muted font-mono">parquet</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">48.3 GB</td>
+                  <td class="px-5 py-3.5"><span class="cls-restricted">RESTRICTED</span></td>
+                  <td class="px-5 py-3.5 text-xs text-faint font-mono">S3-Node-01</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">2026-04-10</td>
+                  <td class="px-5 py-3.5"><button onclick="showToast('Generating presigned S3 URL... (15 min TTL)')" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">Download</button></td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3.5 text-sm text-gray-200 font-mono text-xs">internal_slack_logs_Q1.jsonl</td>
+                  <td class="px-5 py-3.5 text-xs text-muted font-mono">jsonl</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">12.7 GB</td>
+                  <td class="px-5 py-3.5"><span class="cls-confidential">CONFIDENTIAL</span></td>
+                  <td class="px-5 py-3.5 text-xs text-faint font-mono">DB-Main</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">2026-04-01</td>
+                  <td class="px-5 py-3.5"><button onclick="showToast('Generating presigned S3 URL... (15 min TTL)')" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">Download</button></td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3.5 text-sm text-gray-200 font-mono text-xs">llm_pretrain_web_2025.tar.gz</td>
+                  <td class="px-5 py-3.5 text-xs text-muted font-mono">tar.gz</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">2.1 TB</td>
+                  <td class="px-5 py-3.5"><span class="cls-internal">INTERNAL</span></td>
+                  <td class="px-5 py-3.5 text-xs text-faint font-mono">S3-Node-02</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">2026-03-15</td>
+                  <td class="px-5 py-3.5"><button onclick="showToast('Generating presigned S3 URL... (15 min TTL)')" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">Download</button></td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3.5 text-sm text-gray-200 font-mono text-xs">rlhf_preference_data_v3.jsonl</td>
+                  <td class="px-5 py-3.5 text-xs text-muted font-mono">jsonl</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">8.4 GB</td>
+                  <td class="px-5 py-3.5"><span class="cls-internal">INTERNAL</span></td>
+                  <td class="px-5 py-3.5 text-xs text-faint font-mono">S3-Node-01</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">2026-04-20</td>
+                  <td class="px-5 py-3.5"><button onclick="showToast('Generating presigned S3 URL... (15 min TTL)')" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">Download</button></td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3.5 text-sm text-gray-200 font-mono text-xs">medical_records_deidentified.parquet</td>
+                  <td class="px-5 py-3.5 text-xs text-muted font-mono">parquet</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">156 GB</td>
+                  <td class="px-5 py-3.5"><span class="cls-restricted">RESTRICTED</span></td>
+                  <td class="px-5 py-3.5 text-xs text-faint font-mono">S3-Secure</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">2026-01-31</td>
+                  <td class="px-5 py-3.5"><button onclick="showToast('Generating presigned S3 URL... (15 min TTL)')" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">Download</button></td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3.5 text-sm text-gray-200 font-mono text-xs">financial_reports_Q1_Q2.csv</td>
+                  <td class="px-5 py-3.5 text-xs text-muted font-mono">csv</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">3.2 GB</td>
+                  <td class="px-5 py-3.5"><span class="cls-confidential">CONFIDENTIAL</span></td>
+                  <td class="px-5 py-3.5 text-xs text-faint font-mono">DB-Finance</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">2026-04-05</td>
+                  <td class="px-5 py-3.5"><button onclick="showToast('Generating presigned S3 URL... (15 min TTL)')" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">Download</button></td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3.5 text-sm text-gray-200 font-mono text-xs">vision_training_set_v2.tar.gz</td>
+                  <td class="px-5 py-3.5 text-xs text-muted font-mono">tar.gz</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">892 GB</td>
+                  <td class="px-5 py-3.5"><span class="cls-internal">INTERNAL</span></td>
+                  <td class="px-5 py-3.5 text-xs text-faint font-mono">S3-Node-03</td>
+                  <td class="px-5 py-3.5 text-xs text-muted num">2026-02-28</td>
+                  <td class="px-5 py-3.5"><button onclick="showToast('Generating presigned S3 URL... (15 min TTL)')" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">Download</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div><!-- /panel-datasets -->
+
+      <!-- ============================================================
+           PANEL: PIPELINES
+      ============================================================ -->
+      <div id="panel-pipelines" class="p-6" style="display:none;">
+
+        <div style="display:flex;flex-direction:column;gap:0.875rem;">
+
+          <!-- Pipeline 1 -->
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <div class="flex items-center gap-2.5 mb-1">
+                  <p class="text-sm font-semibold text-white">prod-llm-finetune-pipeline</p>
+                  <span class="badge badge-completed">Success</span>
+                </div>
+                <div class="flex items-center gap-4 text-[11px] text-faint font-mono">
+                  <span>Schedule: 0 2 * * *</span>
+                  <span>Next: Tomorrow 02:00 UTC</span>
+                </div>
+              </div>
+              <button onclick="showToast('Pipeline queued. Estimated start: 2–3 minutes.')" class="text-xs font-medium px-2.5 py-1.5 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors flex-shrink-0">Trigger</button>
+            </div>
+            <div class="pipeline-steps">
+              <span class="step-pill step-done">Data</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Preprocess</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Train</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Eval</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Deploy</span>
+            </div>
+          </div>
+
+          <!-- Pipeline 2 -->
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <div class="flex items-center gap-2.5 mb-1">
+                  <p class="text-sm font-semibold text-white">data-ingestion-daily</p>
+                  <span class="badge badge-running">Running</span>
+                </div>
+                <div class="flex items-center gap-4 text-[11px] text-faint font-mono">
+                  <span>Schedule: 0 0 * * *</span>
+                  <span>In progress</span>
+                </div>
+              </div>
+              <button onclick="showToast('Pipeline queued. Estimated start: 2–3 minutes.')" class="text-xs font-medium px-2.5 py-1.5 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors flex-shrink-0">Trigger</button>
+            </div>
+            <div class="pipeline-steps">
+              <span class="step-pill step-done">Extract</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Validate</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-active">Load</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-pending">Index</span>
+            </div>
+          </div>
+
+          <!-- Pipeline 3 -->
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <div class="flex items-center gap-2.5 mb-1">
+                  <p class="text-sm font-semibold text-white">model-eval-benchmark</p>
+                  <span class="badge badge-completed">Success</span>
+                </div>
+                <div class="flex items-center gap-4 text-[11px] text-faint font-mono">
+                  <span>Schedule: 0 18 * * 5</span>
+                  <span>Next: Fri 18:00 UTC</span>
+                </div>
+              </div>
+              <button onclick="showToast('Pipeline queued. Estimated start: 2–3 minutes.')" class="text-xs font-medium px-2.5 py-1.5 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors flex-shrink-0">Trigger</button>
+            </div>
+            <div class="pipeline-steps">
+              <span class="step-pill step-done">Load</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Benchmark</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Report</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Notify</span>
+            </div>
+          </div>
+
+          <!-- Pipeline 4 -->
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <div class="flex items-center gap-2.5 mb-1">
+                  <p class="text-sm font-semibold text-white">deploy-inference-cluster</p>
+                  <span class="badge badge-failed">Failed</span>
+                </div>
+                <div class="flex items-center gap-4 text-[11px] text-faint font-mono">
+                  <span>Schedule: manual</span>
+                  <span>Last: 2026-05-23</span>
+                </div>
+              </div>
+              <button onclick="showToast('Pipeline queued. Estimated start: 2–3 minutes.')" class="text-xs font-medium px-2.5 py-1.5 rounded-lg bg-accent-muted border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-colors flex-shrink-0">Trigger</button>
+            </div>
+            <div class="pipeline-steps">
+              <span class="step-pill step-done">Build</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Test</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-done">Stage</span>
+              <span class="step-connector"></span>
+              <span class="step-pill step-pending" style="border-color:rgba(239,68,68,0.3);background:rgba(239,68,68,0.1);color:#fca5a5;">Deploy</span>
+            </div>
+          </div>
+
+        </div>
+      </div><!-- /panel-pipelines -->
+
+      <!-- ============================================================
+           PANEL: ADMIN
+      ============================================================ -->
+      <div id="panel-admin" class="p-6" style="display:none;">
+
+        <!-- User Management section -->
+        <div class="bg-surface border border-border rounded-xl overflow-hidden shadow-card mb-5">
+          <div class="px-5 py-3.5 border-b border-border">
+            <h3 class="text-sm font-semibold text-white">User Management</h3>
+            <p class="text-[11px] text-faint mt-0.5">Workspace members and access control</p>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead>
+                <tr class="border-b border-border bg-elevated/40">
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Name</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Email</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Role</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Last Active</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Status</th>
+                  <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Actions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border/50">
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">Ming Chen</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">m.chen@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">ML Lead</td>
+                  <td class="px-5 py-3 text-xs text-muted">5 min ago</td>
+                  <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+                  <td class="px-5 py-3 text-xs" style="display:flex;gap:0.75rem;align-items:center;">
+                    <button onclick="showToast('Changes saved')" class="text-indigo-400 hover:text-indigo-300 transition-colors">Edit</button>
+                    <button onclick="showToast('User deactivated')" class="text-muted hover:text-gray-300 transition-colors">Deactivate</button>
+                  </td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">Priya Nair</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">p.nair@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">Data Scientist</td>
+                  <td class="px-5 py-3 text-xs text-muted">2h ago</td>
+                  <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+                  <td class="px-5 py-3 text-xs" style="display:flex;gap:0.75rem;align-items:center;">
+                    <button onclick="showToast('Changes saved')" class="text-indigo-400 hover:text-indigo-300 transition-colors">Edit</button>
+                    <button onclick="showToast('User deactivated')" class="text-muted hover:text-gray-300 transition-colors">Deactivate</button>
+                  </td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">James Wu</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">j.wu@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">Platform Engineer</td>
+                  <td class="px-5 py-3 text-xs text-muted">1d ago</td>
+                  <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+                  <td class="px-5 py-3 text-xs" style="display:flex;gap:0.75rem;align-items:center;">
+                    <button onclick="showToast('Changes saved')" class="text-indigo-400 hover:text-indigo-300 transition-colors">Edit</button>
+                    <button onclick="showToast('User deactivated')" class="text-muted hover:text-gray-300 transition-colors">Deactivate</button>
+                  </td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">Sarah Kim</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">s.kim@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">Research Scientist</td>
+                  <td class="px-5 py-3 text-xs text-muted">3h ago</td>
+                  <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+                  <td class="px-5 py-3 text-xs" style="display:flex;gap:0.75rem;align-items:center;">
+                    <button onclick="showToast('Changes saved')" class="text-indigo-400 hover:text-indigo-300 transition-colors">Edit</button>
+                    <button onclick="showToast('User deactivated')" class="text-muted hover:text-gray-300 transition-colors">Deactivate</button>
+                  </td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">Alex Torres</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">a.torres@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">DevOps</td>
+                  <td class="px-5 py-3 text-xs text-muted">4d ago</td>
+                  <td class="px-5 py-3"><span class="badge badge-queued" style="font-size:0.6rem;">Inactive</span></td>
+                  <td class="px-5 py-3 text-xs" style="display:flex;gap:0.75rem;align-items:center;">
+                    <button onclick="showToast('Changes saved')" class="text-indigo-400 hover:text-indigo-300 transition-colors">Edit</button>
+                    <button onclick="showToast('User activated')" class="text-muted hover:text-gray-300 transition-colors">Activate</button>
+                  </td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">Ryan Park</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">r.park@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">ML Engineer</td>
+                  <td class="px-5 py-3 text-xs text-muted">7h ago</td>
+                  <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+                  <td class="px-5 py-3 text-xs" style="display:flex;gap:0.75rem;align-items:center;">
+                    <button onclick="showToast('Changes saved')" class="text-indigo-400 hover:text-indigo-300 transition-colors">Edit</button>
+                    <button onclick="showToast('User deactivated')" class="text-muted hover:text-gray-300 transition-colors">Deactivate</button>
+                  </td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">Liu Wei</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">l.wei@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">Research Lead</td>
+                  <td class="px-5 py-3 text-xs text-muted">12h ago</td>
+                  <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+                  <td class="px-5 py-3 text-xs" style="display:flex;gap:0.75rem;align-items:center;">
+                    <button onclick="showToast('Changes saved')" class="text-indigo-400 hover:text-indigo-300 transition-colors">Edit</button>
+                    <button onclick="showToast('User deactivated')" class="text-muted hover:text-gray-300 transition-colors">Deactivate</button>
+                  </td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">admin</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">admin@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">System Admin</td>
+                  <td class="px-5 py-3 text-xs text-faint font-mono">2026-04-15</td>
+                  <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+                  <td class="px-5 py-3 text-xs text-faint">—</td>
+                </tr>
+                <tr class="data-row">
+                  <td class="px-5 py-3 text-sm text-gray-200 font-medium">svc-deploy</td>
+                  <td class="px-5 py-3 text-xs text-muted font-mono">svc-deploy@neuro.ai</td>
+                  <td class="px-5 py-3 text-xs text-muted">Service Account</td>
+                  <td class="px-5 py-3 text-xs text-faint font-mono">2026-04-28</td>
+                  <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+                  <td class="px-5 py-3 text-xs text-faint">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- System Info section -->
+        <div class="bg-surface border border-border rounded-xl p-5 shadow-card mb-5">
+          <h3 class="text-sm font-semibold text-white mb-4">System Information</h3>
+          <div class="grid gap-3" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+            <div>
+              <p class="text-[11px] text-faint uppercase tracking-wider font-semibold mb-1">Platform Version</p>
+              <p class="text-sm text-gray-300 font-mono">Neuro v2.3.1 (build 20260428)</p>
+            </div>
+            <div>
+              <p class="text-[11px] text-faint uppercase tracking-wider font-semibold mb-1">Cluster</p>
+              <p class="text-sm text-gray-300 font-mono">gpu-cluster-prod-01 (16 nodes)</p>
+            </div>
+            <div>
+              <p class="text-[11px] text-faint uppercase tracking-wider font-semibold mb-1">Auth Provider</p>
+              <p class="text-sm text-gray-300 font-mono">SSO (Okta) + local fallback</p>
+            </div>
+            <div>
+              <p class="text-[11px] text-faint uppercase tracking-wider font-semibold mb-1">Storage Backend</p>
+              <p class="text-sm text-gray-300 font-mono">s3://neuro-models-prod / DB-Main</p>
+            </div>
+            <div>
+              <p class="text-[11px] text-faint uppercase tracking-wider font-semibold mb-1">Last Deployment</p>
+              <p class="text-sm text-gray-300 font-mono">2026-04-28 06:14 UTC (svc-deploy)</p>
+            </div>
+            <div>
+              <p class="text-[11px] text-faint uppercase tracking-wider font-semibold mb-1">Workspace</p>
+              <p class="text-sm text-gray-300 font-mono">neuro-prod (org: neuro-ai)</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- API Docs link -->
+        <div class="flex items-center gap-1.5">
+          <a href="/api/docs" class="flex items-center gap-1.5 text-xs text-faint hover:text-muted transition-colors">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            API Documentation (/api/docs)
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+            </svg>
+          </a>
+        </div>
+
+      </div><!-- /panel-admin -->
+
+    </main>
+  </div><!-- /main content -->
+</div><!-- /flex h-screen -->
+
+<!-- ================================================================
+     OVERLAY: New Run Blocked Modal
+================================================================ -->
+<div id="new-run-modal" class="modal-overlay hidden">
+  <div class="modal-backdrop" onclick="closeNewRunModal()"></div>
+  <div class="modal-panel w-full" style="max-width:420px;">
+    <div class="bg-surface border border-border rounded-2xl shadow-card p-6 relative">
+      <div class="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-red-500/40 to-transparent rounded-full"></div>
+      <div class="flex items-start justify-between mb-4">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-warn/8 border border-warn/20 flex items-center justify-center flex-shrink-0">
+            <svg class="w-4 h-4 text-warn" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+          </div>
+          <h3 class="text-sm font-semibold text-white">Infrastructure Maintenance</h3>
+        </div>
+        <button onclick="closeNewRunModal()" class="text-faint hover:text-muted transition-colors" style="margin-left:0.75rem;">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <p class="text-sm text-muted leading-relaxed mb-4">
+        New training runs are temporarily suspended. Cluster rebalancing in progress — Node <span class="font-mono text-yellow-200">gpu-node-12</span> reported elevated memory pressure (94%).
+      </p>
+      <p class="text-sm text-muted leading-relaxed mb-5">
+        Estimated restoration: <span class="text-gray-200 font-medium">2h 14m</span>. Contact <span class="font-mono text-indigo-300">#ai-infra</span> on Slack.
+      </p>
+      <button onclick="closeNewRunModal()" class="w-full text-sm font-medium py-2 rounded-xl bg-elevated border border-border text-muted hover:text-gray-200 hover:bg-overlay transition-colors">Dismiss</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     OVERLAY: Deploy Modal
+================================================================ -->
+<div id="deploy-modal" class="modal-overlay hidden">
+  <div class="modal-backdrop" onclick="closeDeployModal()"></div>
+  <div class="modal-panel w-full" style="max-width:380px;">
+    <div class="bg-surface border border-border rounded-2xl shadow-card p-6 relative">
+      <div class="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-indigo-500/40 to-transparent rounded-full"></div>
+      <div class="flex items-center justify-between mb-5">
+        <h3 class="text-sm font-semibold text-white">Deploying <span id="deploy-model-name" class="font-mono text-indigo-300"></span></h3>
+        <button onclick="closeDeployModal()" class="text-faint hover:text-muted transition-colors">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <p class="text-xs text-muted mb-4">Initiating deployment to inference cluster...</p>
+      <!-- Animated progress bar -->
+      <div class="bg-elevated rounded-full h-1.5 overflow-hidden mb-4">
+        <div id="deploy-progress-bar" class="h-full rounded-full" style="background:linear-gradient(to right,#6366f1,#8b5cf6);width:0%;transition:width 0.4s ease;"></div>
+      </div>
+      <p class="text-[11px] text-faint">Est. completion: 4–6 minutes. You will be notified via <span class="font-mono text-indigo-300">#ml-deployments</span>.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     TOAST
+================================================================ -->
+<div id="toast" class="toast hidden"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Run data ─────────────────────────────────────────────────────────────────
+const RUNS = [
+  { id:'run-001', name:'llm-finetune-v4-prod',        model:'nf-llm-70b-q4',    status:'running',   started:'2026-05-24 01:15', duration:'6h 42m',  loss:'0.0831', gpu:'97.4%' },
+  { id:'run-002', name:'rlhf-reward-v2',              model:'nf-reward-v1',     status:'running',   started:'2026-05-24 03:58', duration:'4h 01m',  loss:'0.1204', gpu:'91.2%' },
+  { id:'run-003', name:'embed-biomedcorpus',          model:'nf-embed-v2',      status:'queued',    started:'—',               duration:'—',       loss:'—',      gpu:'—' },
+  { id:'run-004', name:'gpt2-instruct-ablation',      model:'nf-llm-70b-q4',    status:'completed', started:'2026-05-23 18:00', duration:'8h 12m',  loss:'0.0612', gpu:'88.5%' },
+  { id:'run-005', name:'clip-vision-v3',              model:'nf-vision-clip-v3',status:'completed', started:'2026-05-23 09:30', duration:'11h 47m', loss:'0.0438', gpu:'79.1%' },
+  { id:'run-006', name:'bert-squad-finetune',         model:'nf-bert-squad',    status:'failed',    started:'2026-05-24 00:04', duration:'0h 12m',  loss:'N/A',    gpu:'—' },
+  { id:'run-007', name:'LLM_FineTune_v4_Internal_Private', model:'nf-llm-70b-q4', status:'running', started:'2026-05-23 22:41', duration:'8h 32m',  loss:'0.0941', gpu:'97.8%' },
+  { id:'run-008', name:'medical-ner-bert-prod',       model:'nf-bert-squad',    status:'queued',    started:'—',               duration:'—',       loss:'—',      gpu:'—' },
+];
+
+const STATUS_BADGE = {
+  running:   '<span class="badge badge-running"><span class="w-1.5 h-1.5 rounded-full pulse" style="background:#38bdf8;flex-shrink:0;"></span>Running</span>',
+  completed: '<span class="badge badge-completed">Completed</span>',
+  failed:    '<span class="badge badge-failed">Failed</span>',
+  queued:    '<span class="badge badge-queued">Queued</span>',
+};
+
+function buildRunRow(r) {
+  return `<tr class="data-row" data-status="${r.status}" onclick="showToast('Opening run details...');" style="cursor:pointer;">
+    <td class="px-5 py-3.5">
+      <div class="font-mono text-xs text-indigo-300">${r.id}</div>
+      <div class="text-[11px] text-faint mt-0.5 truncate" style="max-width:140px;" title="${r.name}">${r.name}</div>
+    </td>
+    <td class="px-5 py-3.5 text-xs text-muted font-mono">${r.model}</td>
+    <td class="px-5 py-3.5">${STATUS_BADGE[r.status]}</td>
+    <td class="px-5 py-3.5 text-xs text-muted num">${r.started}</td>
+    <td class="px-5 py-3.5 text-xs text-muted num">${r.duration}</td>
+    <td class="px-5 py-3.5 text-xs text-gray-300 font-mono num">${r.loss}</td>
+    <td class="px-5 py-3.5 text-xs text-muted num">${r.gpu}</td>
+  </tr>`;
+}
+
+function renderRunsTable() {
+  const html = RUNS.map(buildRunRow).join('');
+  const tbodies = ['overview-runs-tbody', 'runs-panel-tbody'];
+  tbodies.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  });
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+const TAB_META = {
+  overview:  { title: 'Dashboard Overview',   subtitle: 'build 20260428 · workspace: neuro-prod', action: true  },
+  runs:      { title: 'Training Runs',         subtitle: 'All training jobs in your workspace',    action: true  },
+  models:    { title: 'Model Registry',        subtitle: 'Registered model checkpoints and deployments', action: false },
+  datasets:  { title: 'Dataset Registry',      subtitle: 'Training and evaluation datasets',       action: false },
+  pipelines: { title: 'ML Pipelines',          subtitle: 'Automated training and deployment workflows', action: false },
+  admin:     { title: 'Administration',        subtitle: 'System management and user access',      action: false },
+};
+
+const ALL_TABS = Object.keys(TAB_META);
+
+function switchTab(name) {
+  ALL_TABS.forEach(t => {
+    const panel = document.getElementById('panel-' + t);
+    const nav   = document.getElementById('nav-' + t);
+    if (panel) panel.style.display = (t === name) ? 'block' : 'none';
+    if (nav)   nav.classList.toggle('active', t === name);
+  });
+
+  const meta = TAB_META[name] || {};
+  document.getElementById('topbar-title').textContent    = meta.title    || '';
+  document.getElementById('topbar-subtitle').textContent = meta.subtitle || '';
+
+  const btn = document.getElementById('topbar-action');
+  if (meta.action) {
+    btn.classList.remove('hidden');
+  } else {
+    btn.classList.add('hidden');
+  }
+
+  // Reset all filter buttons to "All" active when switching tabs
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === 'all');
+  });
+  document.querySelectorAll('tr[data-status]').forEach(r => r.style.display = '');
+}
+
+// ── New Run modal ─────────────────────────────────────────────────────────────
+function openNewRunModal() {
+  document.getElementById('new-run-modal').classList.remove('hidden');
+}
+function closeNewRunModal() {
+  document.getElementById('new-run-modal').classList.add('hidden');
+}
+
+// ── Workspace dropdown ────────────────────────────────────────────────────────
+function toggleWorkspaceDropdown(e) {
+  e.stopPropagation();
+  const dd = document.getElementById('workspace-dropdown');
+  const up = document.getElementById('user-popup');
+  up.classList.add('hidden');
+  dd.classList.toggle('hidden');
+}
+
+// ── User popup ────────────────────────────────────────────────────────────────
+function toggleUserPopup(e) {
+  e.stopPropagation();
+  const up = document.getElementById('user-popup');
+  const dd = document.getElementById('workspace-dropdown');
+  dd.classList.add('hidden');
+  up.classList.toggle('hidden');
+}
+
+// ── Deploy modal ──────────────────────────────────────────────────────────────
+let _deployTimer = null;
+function openDeployModal(modelName) {
+  document.getElementById('deploy-model-name').textContent = modelName;
+  const bar = document.getElementById('deploy-progress-bar');
+  bar.style.width = '0%';
+  document.getElementById('deploy-modal').classList.remove('hidden');
+  clearInterval(_deployTimer);
+  let pct = 0;
+  _deployTimer = setInterval(() => {
+    pct = Math.min(100, pct + (Math.random() * 4 + 1.5));
+    bar.style.width = pct.toFixed(1) + '%';
+    if (pct >= 100) {
+      clearInterval(_deployTimer);
+      setTimeout(() => {
+        closeDeployModal();
+        showToast('Deployment initiated for ' + modelName + '. Check #ml-deployments.');
+      }, 600);
+    }
+  }, 250);
+}
+function closeDeployModal() {
+  clearInterval(_deployTimer);
+  document.getElementById('deploy-modal').classList.add('hidden');
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.classList.add('hidden'), 3000);
+}
+
+// ── Filter runs ───────────────────────────────────────────────────────────────
+function filterRuns(status) {
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === status);
+  });
+  document.querySelectorAll('tr[data-status]').forEach(row => {
+    row.style.display = (status === 'all' || row.dataset.status === status) ? '' : 'none';
+  });
+}
+
+// ── Close dropdowns on outside click ─────────────────────────────────────────
+document.addEventListener('click', () => {
+  document.getElementById('workspace-dropdown').classList.add('hidden');
+  document.getElementById('user-popup').classList.add('hidden');
+});
+
+// ── Live loss chart ───────────────────────────────────────────────────────────
+(function initLossChart() {
+  const ctx = document.getElementById('loss-chart');
+  if (!ctx) return;
+
+  // Generate 30 descending points from ~2.4 toward ~0.12
+  const data = [];
+  const labels = [];
+  let val = 2.4;
+  for (let i = 0; i < 30; i++) {
+    val = Math.max(0.08, val * 0.93 + (Math.random() - 0.5) * 0.08);
+    data.push(parseFloat(val.toFixed(4)));
+    labels.push(i);
+  }
+
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: data,
+        borderColor: '#6366f1',
+        borderWidth: 1.5,
+        backgroundColor: function(context) {
+          const c = context.chart.ctx;
+          const area = context.chart.chartArea;
+          if (!area) return 'transparent';
+          const gradient = c.createLinearGradient(0, area.top, 0, area.bottom);
+          gradient.addColorStop(0, 'rgba(99,102,241,0.20)');
+          gradient.addColorStop(1, 'rgba(99,102,241,0.00)');
+          return gradient;
+        },
+        tension: 0.4,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        fill: true,
+      }]
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { display: false },
+        y: {
+          grid: { color: '#1e293b' },
+          border: { color: '#272b3a' },
+          ticks: {
+            color: '#64748b',
+            font: { size: 10, family: 'JetBrains Mono' },
+            callback: v => v.toFixed(2)
+          }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e2130',
+          borderColor: '#272b3a',
+          borderWidth: 1,
+          titleColor: '#9ca3af',
+          bodyColor: '#e5e7eb',
+          titleFont: { family: 'JetBrains Mono', size: 10 },
+          bodyFont: { family: 'JetBrains Mono', size: 11 },
+          padding: 10,
+          callbacks: {
+            title: items => 'Step ' + items[0].label,
+            label: item => 'loss: ' + item.parsed.y.toFixed(4),
+          }
+        }
+      }
+    }
+  });
+
+  // Stream new point every 1200ms
+  setInterval(() => {
+    const d = chart.data.datasets[0].data;
+    const last = d[d.length - 1];
+    const next = Math.max(0.06, last * 0.995 + (Math.random() - 0.52) * 0.015);
+    d.push(parseFloat(next.toFixed(4)));
+    d.shift();
+    const lbs = chart.data.labels;
+    lbs.push(lbs[lbs.length - 1] + 1);
+    lbs.shift();
+    chart.update('none');
+  }, 1200);
+})();
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+renderRunsTable();
+switchTab('overview');
+
+// WebSocket live metrics (graceful — fails silently if WS not available)
+try {
+  const ws = new WebSocket('wss://' + location.host + '/ws/metrics');
+  ws.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      // handle live metric updates if WS comes online
+      void d;
+    } catch {}
+  };
+} catch {}
+</script>
+{% endblock %}

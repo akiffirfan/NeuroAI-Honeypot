@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+
+{% block title %}New Training Job — Neuro{% endblock %}
+
+{% block body %}
+<!--
+  Neuro Job Launcher v2.1.0
+  Scheduling backend: /api/v1/training/jobs (POST)
+  GPU quota: 8 × A100-80GB (neuro-train-01 cluster)
+  TODO: validate startup-script field on server side — currently passed to init container as-is (priya.nair @ 2026-03-14)
+-->
+<div class="flex h-screen bg-canvas overflow-hidden">
+
+  <!-- ================================================================
+       SIDEBAR
+  ================================================================ -->
+  <aside class="w-[220px] flex-shrink-0 bg-surface border-r border-border flex flex-col select-none">
+
+    <div class="px-4 py-4 border-b border-border">
+      <div class="flex items-center gap-2.5">
+        <svg class="w-6 h-6 flex-shrink-0" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="28" height="28" rx="6" fill="#6366f1" fill-opacity="0.12"/>
+          <circle cx="14" cy="14" r="4.5" stroke="#6366f1" stroke-width="1.6" fill="none"/>
+          <circle cx="14" cy="14" r="1.8" fill="#6366f1"/>
+          <line x1="14" y1="2" x2="14" y2="8" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="14" y1="20" x2="14" y2="26" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="2" y1="14" x2="8" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="20" y1="14" x2="26" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <span class="text-white font-semibold text-sm tracking-tight">neuro</span>
+          <span class="ml-1.5 text-[10px] font-mono text-faint bg-elevated border border-border px-1.5 py-0.5 rounded">v2.3</span>
+        </div>
+      </div>
+    </div>
+
+    <nav class="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
+      <p class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-faint">Training</p>
+
+      <a href="/dashboard" class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-elevated text-muted hover:text-gray-200 text-sm transition-colors">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 13a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1h-4a1 1 0 01-1-1v-6z"/>
+        </svg>
+        Overview
+      </a>
+
+      <a href="/api/v1/training/jobs" class="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-accent-muted text-white text-sm font-medium">
+        <svg class="w-4 h-4 text-indigo-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+        Runs
+        <span class="ml-auto text-[10px] font-mono bg-success/15 text-success px-1.5 py-0.5 rounded-full">2</span>
+      </a>
+
+      <a href="/api/v1/models" class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-elevated text-muted hover:text-gray-200 text-sm transition-colors">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/>
+        </svg>
+        Models
+      </a>
+
+      <a href="/api/v1/data/datasets" class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-elevated text-muted hover:text-gray-200 text-sm transition-colors">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
+        </svg>
+        Datasets
+      </a>
+
+      <div class="border-t border-border my-2 mx-1"></div>
+      <p class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-faint">Storage</p>
+
+      <a href="/artifacts" class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-elevated text-muted hover:text-gray-200 text-sm transition-colors">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/>
+        </svg>
+        Artifacts
+      </a>
+
+      <div class="border-t border-border my-2 mx-1"></div>
+      <p class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-faint">System</p>
+
+      <a href="/admin" class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-elevated text-muted hover:text-gray-200 text-sm transition-colors">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        Admin
+      </a>
+    </nav>
+
+    <div class="p-3 border-t border-border">
+      <button class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-elevated transition-colors text-left">
+        <div class="w-7 h-7 rounded-lg bg-indigo-500/30 border border-indigo-500/40 flex items-center justify-center text-xs font-bold text-indigo-300 flex-shrink-0">MC</div>
+        <div class="min-w-0 flex-1">
+          <p class="text-xs font-semibold text-gray-200 truncate">Ming Chen</p>
+          <p class="text-[10px] text-faint truncate">m.chen@neuro.ai</p>
+        </div>
+        <svg class="w-3.5 h-3.5 text-faint flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"/>
+        </svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ================================================================
+       MAIN CONTENT
+  ================================================================ -->
+  <div class="flex-1 flex flex-col overflow-hidden min-w-0">
+
+    <!-- Top bar -->
+    <header class="bg-surface border-b border-border px-6 py-3.5 flex items-center justify-between flex-shrink-0">
+      <div class="flex items-center gap-3">
+        <a href="/api/v1/training/jobs" class="text-faint hover:text-muted transition-colors">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+          </svg>
+        </a>
+        <div>
+          <h2 class="text-sm font-semibold text-white">New Training Job</h2>
+          <p class="text-[11px] text-faint font-mono">cluster: neuro-train-01 &middot; 8 × A100-80GB available</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 bg-elevated border border-border rounded-lg px-3 py-1.5 text-xs">
+        <span class="w-1.5 h-1.5 rounded-full bg-success pulse flex-shrink-0"></span>
+        <span class="text-muted">GPU Cluster</span>
+        <span class="font-semibold text-success">7/8 nodes</span>
+      </div>
+    </header>
+
+    <!-- Form content -->
+    <main class="flex-1 overflow-y-auto p-6">
+      <div class="max-w-5xl mx-auto">
+
+        <form method="POST" action="/jobs/new" class="space-y-5" id="job-form">
+
+          <!-- Row 1: Job name + Base model -->
+          <div class="grid grid-cols-3 gap-4">
+
+            <div class="col-span-2 bg-surface border border-border rounded-xl p-5 shadow-card">
+              <h3 class="text-sm font-semibold text-white mb-4">Job Configuration</h3>
+              <div class="space-y-4">
+
+                <div>
+                  <label for="job-name" class="block text-xs font-medium text-muted mb-1.5">Job Name</label>
+                  <input
+                    id="job-name"
+                    name="job_name"
+                    type="text"
+                    placeholder="e.g. llama3-sft-run-048"
+                    class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono"
+                  >
+                  <p class="mt-1 text-[11px] text-faint">Alphanumeric, hyphens allowed. Must be unique within workspace.</p>
+                </div>
+
+                <div class="grid grid-cols-3 gap-4">
+                  <div>
+                    <label for="base-model" class="block text-xs font-medium text-muted mb-1.5">Base Model</label>
+                    <select
+                      id="base-model"
+                      name="base_model"
+                      class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                      <option value="llama3-8b">llama3-8b</option>
+                      <option value="llama3-rlhf">llama3-rlhf</option>
+                      <option value="mistral-7b">mistral-7b</option>
+                      <option value="phi-3-mini">phi-3-mini</option>
+                      <option value="gpt4-cls">gpt4-cls</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label for="dataset" class="block text-xs font-medium text-muted mb-1.5">Dataset</label>
+                    <select
+                      id="dataset"
+                      name="dataset"
+                      class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                      <option value="neuro-internal-corpus-v4">neuro-internal-corpus-v4</option>
+                      <option value="rlhf-preference-pairs-v2">rlhf-preference-pairs-v2</option>
+                      <option value="code-instruct-12b">code-instruct-12b</option>
+                      <option value="safety-alignment-v1">safety-alignment-v1</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label for="gpu-count" class="block text-xs font-medium text-muted mb-1.5">GPU Count</label>
+                    <select
+                      id="gpu-count"
+                      name="gpu_count"
+                      class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                      <option value="1">1 × A100</option>
+                      <option value="2">2 × A100</option>
+                      <option value="4" selected>4 × A100</option>
+                      <option value="8">8 × A100</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-3 gap-4">
+                  <div>
+                    <label for="max-steps" class="block text-xs font-medium text-muted mb-1.5">Max Steps</label>
+                    <input
+                      id="max-steps"
+                      name="max_steps"
+                      type="number"
+                      value="5000"
+                      min="100"
+                      max="500000"
+                      class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono"
+                    >
+                  </div>
+
+                  <div>
+                    <label for="learning-rate" class="block text-xs font-medium text-muted mb-1.5">Learning Rate</label>
+                    <input
+                      id="learning-rate"
+                      name="learning_rate"
+                      type="text"
+                      value="2e-5"
+                      placeholder="2e-5"
+                      class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono"
+                    >
+                  </div>
+
+                  <div>
+                    <label for="output-dir" class="block text-xs font-medium text-muted mb-1.5">Output Path</label>
+                    <input
+                      id="output-dir"
+                      name="output_dir"
+                      type="text"
+                      placeholder="s3://neuro-ml-artifacts/"
+                      class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono"
+                    >
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- Resource estimate sidebar -->
+            <div class="bg-surface border border-border rounded-xl p-5 shadow-card flex flex-col gap-4">
+              <h3 class="text-sm font-semibold text-white">Estimated Resources</h3>
+
+              <div class="space-y-3 text-xs">
+                <div class="flex justify-between items-center">
+                  <span class="text-muted">GPU Memory</span>
+                  <span class="text-gray-200 font-mono font-medium">4 × 80 GB</span>
+                </div>
+                <div class="flex justify-between items-center">
+                  <span class="text-muted">Est. Duration</span>
+                  <span class="text-gray-200 font-mono font-medium">~18 h</span>
+                </div>
+                <div class="flex justify-between items-center">
+                  <span class="text-muted">Queue Position</span>
+                  <span class="text-success font-mono font-medium">#1</span>
+                </div>
+                <div class="flex justify-between items-center">
+                  <span class="text-muted">Quota Used</span>
+                  <span class="text-gray-200 font-mono font-medium">4 / 8 GPUs</span>
+                </div>
+              </div>
+
+              <div class="mt-auto p-3 bg-elevated rounded-xl border border-border text-[11px] text-muted leading-relaxed">
+                Job will start immediately. Logs stream to <span class="font-mono text-gray-300">/jobs/&lt;run-id&gt;/logs</span> once provisioned.
+              </div>
+            </div>
+          </div>
+
+          <!-- Startup script (RCE trap field) -->
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <h3 class="text-sm font-semibold text-white">Pre-training Initialization Script</h3>
+                <p class="text-xs text-muted mt-0.5">Shell script executed inside the training container before the main training process starts. Runs as <span class="font-mono text-gray-300">neuro-svc</span> (uid=1000).</p>
+              </div>
+              <span class="text-[10px] font-mono text-faint bg-elevated border border-border px-1.5 py-0.5 rounded">optional</span>
+            </div>
+            <textarea
+              id="startup-script"
+              name="startup_script"
+              rows="7"
+              placeholder="#!/bin/bash&#10;# Example: install additional packages&#10;pip install --quiet wandb==0.16.3&#10;export WANDB_PROJECT=neuro-finetune"
+              class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono resize-y"
+            ></textarea>
+            <p class="mt-1.5 text-[11px] text-faint">
+              Script output is captured in the job log. Network egress from init containers is unrestricted.
+              <!-- TODO: restrict egress from init containers — currently allows arbitrary outbound (priya.nair @ 2026-03-14) -->
+            </p>
+          </div>
+
+          <!-- Actions -->
+          <div class="flex items-center justify-end gap-3">
+            <a href="/api/v1/training/jobs" class="px-4 py-2.5 text-sm font-medium text-muted hover:text-gray-200 transition-colors rounded-xl hover:bg-elevated border border-transparent hover:border-border">
+              Cancel
+            </a>
+            <button
+              type="submit"
+              id="launch-btn"
+              class="bg-accent hover:bg-accent-dim active:scale-[0.99] text-white rounded-xl px-5 py-2.5 text-sm font-semibold transition-all duration-150 flex items-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              Launch Training Job
+            </button>
+          </div>
+
+        </form>
+
+      </div>
+    </main>
+  </div>
+</div>
+{% endblock %}

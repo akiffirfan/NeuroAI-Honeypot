@@ -1,0 +1,140 @@
+# Module 6 — honeypot-api (FastAPI Deceptive HTTP Honeypot)
+# Standalone compose for independent deployment and verification.
+# Run from /opt/honeypot/deploy/module-6-honeypot-api/ after Module 5 passes all 8 checks.
+#
+# OPERATOR PREREQUISITES (do not skip):
+#   1. Module 5 verify-module-5.sh — all 8 checks must be green
+#      (Modules 1–5 created honeypot-net, data-net, geoip-data volume, and all log volumes)
+#   2. Create host directories and set ownership:
+#        sudo mkdir -p /opt/honeypot/config/honeypot-api
+#        sudo mkdir -p /opt/honeypot/honeypot/api/lure-files
+#        sudo chown -R 100000:100000 /opt/honeypot/config/honeypot-api /opt/honeypot/honeypot/api/
+#   3. Seed lure files:
+#        echo '{"model":"llama3-8b-finetune","version":"v1.2.3","s3_path":"s3://neuro-ml-artifacts/models/llama3-8b/"}' \
+#          | sudo tee /opt/honeypot/honeypot/api/lure-files/model-manifest.json
+#        sudo chown 100000:100000 /opt/honeypot/honeypot/api/lure-files/model-manifest.json
+#   4. Copy and populate the .env file:
+#        cp .env.example .env && chmod 600 .env
+#        # Set POSTGRES_PASSWORD — must match Module 1 .env
+#        # Set REDIS_PASSWORD — must match config/redis/redis.conf requirepass
+#        # Set HONEYDASH_SENSOR_KEY — must match /opt/honeydash/backend/.env SENSOR_API_KEY
+#   5. Build and start:
+#        docker compose up -d --build
+#   6. Run: bash verify-module-6.sh — all checks must pass
+#
+# NETWORK MODEL:
+#   honeypot-api joins TWO networks:
+#   - honeypot-net (internal: false) — receives HTTP from Nginx (Module 7); also provides
+#     host-gateway route to reach HoneyDash for direct event push
+#   - data-net (internal: true) — writes events to postgres:5432 and redis:6379
+#
+# PORT MODEL:
+#   - 127.0.0.1:8080:8080 — main FastAPI app (all routes including /)
+#   - 127.0.0.1:8888:8888 — fake Jupyter stub FastAPI app
+#   Both bind to loopback only. Nginx (Module 7) proxies external traffic to these.
+#   No DNAT rule is needed for Module 6 — ports 80/443 are handled by Nginx.
+#
+# READ-ONLY FILESYSTEM:
+#   The container runs with read_only: true (from the master compose in plans.md).
+#   This standalone compose does NOT set read_only to simplify first-deploy debugging.
+#   The master compose will enforce read_only with /tmp tmpfs. See plans.md Section 7.1.
+#
+# SECURITY NOTES:
+#   - no-new-privileges:true prevents privilege escalation
+#   - cap_drop: [ALL] — pure userspace Python app needs zero Linux capabilities
+#   - Both ports bind to 127.0.0.1 (loopback) only — never directly internet-accessible
+#   - GeoIP databases read from shared geoip-data volume (populated by Module 5)
+#
+# IMAGE PINNING (do before production goes live):
+#   Pin the built image by digest after first successful build:
+#     docker inspect honeypot-api --format '{{index .RepoDigests 0}}'
+#   The python:3.12-slim base tag is mutable. Pin in Dockerfile before live traffic.
+
+networks:
+  honeypot-net:
+    external: true       # created by Module 2; do NOT redefine — joining only
+    name: honeypot-net   # must match exactly what Module 2 set
+
+  data-net:
+    external: true       # created by Module 1; do NOT redefine — joining only
+    name: data-net       # must match exactly what Module 1 set
+
+volumes:
+  geoip-data:
+    external: true       # populated by Module 5 operator prerequisites
+    name: geoip-data
+
+services:
+
+  honeypot-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: honeypot-api
+    restart: on-failure:5        # Compose-native max-attempts; deploy.restart_policy is Swarm-only
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # No cap_add required — pure userspace Python/FastAPI service; no file descriptor binding
+    # to privileged ports (both uvicorn processes bind to :8080 and :8888 as non-root).
+    networks:
+      - honeypot-net             # receives HTTP traffic from Nginx; host-gateway route for HoneyDash push
+      - data-net                 # postgres:5432 and redis:6379
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      # Resolves via honeypot-net (internal: false) default route to reach HoneyDash
+      # on host port 8000. Required for HONEYDASH_URL push. Do not remove honeypot-net
+      # from this service or host.docker.internal resolution will fail.
+    ports:
+      - "127.0.0.1:8080:8080"   # loopback-only; Nginx proxies /api/, /admin, / to this port
+      - "127.0.0.1:8888:8888"   # loopback-only; Nginx serves fake Jupyter on separate server block
+    volumes:
+      # Runtime config bind-mount (read-only) — operator may place a config.json here for runtime overrides
+      - ../../config/honeypot-api/:/app/config/:ro
+      # Fake downloadable files for lure endpoints (read-only) — weekly maintenance script updates these
+      - ../../honeypot/api/lure-files/:/app/lure-files/:ro
+      # GeoIP databases — read-only; shared volume populated by Module 5
+      - geoip-data:/geoip:ro
+    env_file:
+      - .env
+    environment:
+      # PostgreSQL — DSN uses the 'honeypot' user created by Module 1 init SQL
+      # POSTGRES_PASSWORD is loaded from .env (must match Module 1 .env value)
+      - POSTGRES_DSN=postgresql://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeypot
+
+      # Redis — internal event bus on data-net; NOT the OpenCanary fake Redis on honeypot-net
+      # REDIS_PASSWORD must match requirepass in /opt/honeypot/config/redis/redis.conf
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+
+      # HoneyDash ingest — reaches HoneyDash stack on host via host.docker.internal
+      # HONEYDASH_SENSOR_KEY must match SENSOR_API_KEY in /opt/honeydash/backend/.env
+      # Set HONEYDASH_URL to empty string to disable push (events still go to Postgres)
+      - HONEYDASH_URL=${HONEYDASH_URL:-}
+      - SENSOR_API_KEY=${HONEYDASH_SENSOR_KEY}
+
+      # Sensor name — appears in HoneyDash sensor_name field and honeypot_events.sensor
+      - SENSOR_NAME=neuro-api-01
+
+      # Lure and config paths inside the container (bind-mounted from host)
+      - LURE_DIR=/app/lure-files
+      - CONFIG_DIR=/app/config
+
+      # GeoIP database paths inside the container (from geoip-data volume)
+      - GEOIP_DB=/geoip/GeoLite2-City.mmdb
+      - GEOIP_ASN_DB=/geoip/GeoLite2-ASN.mmdb
+
+      # Python runtime flags — prevent .pyc writes (required if read_only: true in master compose)
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONPYCACHEPREFIX=/tmp/.pycache
+      - PYTHONUNBUFFERED=1
+    mem_limit: 384m
+    memswap_limit: 384m          # FastAPI is async (no per-request forks); OOM > swap thrash under flood
+    cpus: "0.75"                 # async event loop; 0.75 is ample, leaves headroom for other containers
+    pids_limit: 100              # two uvicorn workers (8080+8888) + asyncio threads; 100 is a hard ceiling
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s          # FastAPI startup: DB connect retry + GeoIP load = ~5s; 15s is safe

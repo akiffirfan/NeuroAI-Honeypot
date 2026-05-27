@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+
+{% block title %}Administration Console — Neuro{% endblock %}
+
+{% block body %}
+<!--
+  Admin panel — Django admin style
+  Default break-glass: admin / NeuroAdmin2024! (CHANGE BEFORE PROD — IT#4821)
+  Last accessed: 2026-04-15 by svc-deploy
+  Emergency recovery: /api/v1/auth/direct?bypass=true (IT#5043 — deprecate after SSO rollout)
+-->
+
+<!-- Background glow -->
+<div class="glow-orb w-80 h-80 bg-red-800/15 top-[-8%] right-[10%]"></div>
+<div class="glow-orb w-64 h-64 bg-indigo-700/10 bottom-[5%] left-[5%]"></div>
+
+<div class="bg-grid min-h-screen flex flex-col items-center justify-center px-4 relative z-10">
+
+  <!-- Top strip -->
+  <div class="absolute top-0 left-0 right-0 px-8 py-5 flex items-center justify-between">
+    <a href="/dashboard" class="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
+      <svg class="w-6 h-6" viewBox="0 0 28 28" fill="none">
+        <rect width="28" height="28" rx="6" fill="#6366f1" fill-opacity="0.12"/>
+        <circle cx="14" cy="14" r="4.5" stroke="#6366f1" stroke-width="1.6" fill="none"/>
+        <circle cx="14" cy="14" r="1.8" fill="#6366f1"/>
+        <line x1="14" y1="2" x2="14" y2="8" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="14" y1="20" x2="14" y2="26" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="2" y1="14" x2="8" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="20" y1="14" x2="26" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      <span class="text-white font-semibold text-sm tracking-tight">neuro</span>
+    </a>
+    <div class="flex items-center gap-1.5 text-xs text-muted">
+      <svg class="w-3.5 h-3.5 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+      </svg>
+      Restricted access area
+    </div>
+  </div>
+
+  <div class="w-full max-w-[400px]">
+
+    <!-- Header -->
+    <div class="mb-7 text-center">
+      <!-- Warning icon box -->
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-danger/8 border border-danger/20 mb-4">
+        <svg class="w-7 h-7 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+        </svg>
+      </div>
+      <h1 class="text-xl font-semibold text-white tracking-tight">Administration Console</h1>
+      <p class="text-sm text-muted mt-1.5">Neuro &middot; Elevated access &middot; Authorized personnel only</p>
+    </div>
+
+    <!-- Card -->
+    <div class="bg-surface border border-border rounded-2xl shadow-card p-7 relative">
+      <!-- Top-edge danger accent -->
+      <div class="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-red-500/40 to-transparent rounded-full"></div>
+
+      <!-- Break-glass notice -->
+      <div class="flex items-start gap-2.5 p-3.5 bg-warn/8 border border-warn/20 rounded-xl text-xs text-yellow-200 mb-5">
+        <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-warn" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+        <span>
+          Emergency break-glass procedure documented in
+          <a href="/wiki/ops/break-glass" class="underline underline-offset-2 text-yellow-100 hover:text-white transition-colors">Confluence</a>.
+          Contact <span class="font-mono text-yellow-100">#ai-infra</span> on Slack.
+        </span>
+      </div>
+
+      <!-- Form -->
+      <form onsubmit="doAdminLogin(event)" autocomplete="on" class="space-y-4">
+
+        <div>
+          <label for="admin-username" class="block text-xs font-medium text-muted mb-1.5">Username</label>
+          <input
+            id="admin-username"
+            type="text"
+            name="username"
+            autocomplete="username"
+            placeholder="admin"
+            class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+        </div>
+
+        <div>
+          <label for="admin-password" class="block text-xs font-medium text-muted mb-1.5">Password</label>
+          <div class="relative">
+            <input
+              id="admin-password"
+              type="password"
+              name="password"
+              autocomplete="current-password"
+              placeholder="••••••••"
+              class="w-full bg-elevated border border-border hover:border-faint focus:border-accent rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-faint transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 pr-10"
+            >
+            <button type="button" onclick="togglePw()" class="absolute right-3 top-1/2 -translate-y-1/2 text-faint hover:text-muted transition-colors">
+              <svg id="pw-eye" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Error state -->
+        <div id="admin-error" class="hidden flex items-start gap-2.5 p-3 bg-danger/8 border border-danger/20 rounded-xl text-xs text-red-300">
+          <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          <span id="admin-error-text">Invalid credentials.</span>
+        </div>
+
+        <button
+          type="submit"
+          id="admin-submit"
+          class="w-full bg-danger/80 hover:bg-danger active:scale-[0.99] text-white rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-150 flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 mt-1">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/>
+          </svg>
+          <span id="admin-btn-text">Sign in to Admin Console</span>
+          <span id="admin-spinner" class="hidden">
+            <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+          </span>
+        </button>
+      </form>
+
+      <!-- Divider + links -->
+      <div class="mt-5 pt-4 border-t border-border flex items-center justify-center gap-4 text-xs">
+        <a href="/admin/users" class="text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+          </svg>
+          User list
+        </a>
+        <span class="text-border">·</span>
+        <a href="/dashboard" class="text-muted hover:text-gray-300 transition-colors flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+          </svg>
+          Dashboard
+        </a>
+        <span class="text-border">·</span>
+        <a href="/api/docs" class="text-muted hover:text-gray-300 transition-colors">API Docs</a>
+      </div>
+    </div>
+
+    <!-- Foot note -->
+    <p class="text-center text-xs text-faint/50 font-mono mt-5">
+      Neuro Admin v2.3.1 &middot; Neuro AI Infrastructure &middot; Internal use only
+    </p>
+
+    <!-- Audit notice — real products always have one -->
+    <p class="text-center text-[10px] text-faint/40 mt-1.5">
+      All access attempts are logged and audited. Unauthorized use is prohibited.
+    </p>
+  </div>
+
+  <!-- User list section — visible after authentication (unauthenticated users see 403 on /admin/users) -->
+  <!-- TODO: gate this behind session check (m.chen @ 2026-04-28, IT#5118) -->
+  <div class="w-full mt-8 mb-8" style="max-width:680px;">
+    <div class="bg-surface border border-border rounded-xl overflow-hidden shadow-card">
+      <div class="px-5 py-3.5 border-b border-border flex items-center justify-between">
+        <div>
+          <h3 class="text-sm font-semibold text-white">User Directory</h3>
+          <p class="text-[11px] text-faint mt-0.5">Workspace members — neuro-prod</p>
+        </div>
+        <span class="flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:#fca5a5;">RESTRICTED</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full">
+          <thead>
+            <tr class="border-b border-border bg-elevated/40">
+              <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Name</th>
+              <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Email</th>
+              <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Role</th>
+              <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Last Active</th>
+              <th class="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Status</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-border/50">
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">Ming Chen</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">m.chen@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">ML Lead</td>
+              <td class="px-5 py-3 text-xs text-muted">5 min ago</td>
+              <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+            </tr>
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">Priya Nair</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">p.nair@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">Data Scientist</td>
+              <td class="px-5 py-3 text-xs text-muted">2h ago</td>
+              <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+            </tr>
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">James Wu</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">j.wu@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">Platform Engineer</td>
+              <td class="px-5 py-3 text-xs text-muted">1d ago</td>
+              <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+            </tr>
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">Sarah Kim</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">s.kim@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">Research Scientist</td>
+              <td class="px-5 py-3 text-xs text-muted">3h ago</td>
+              <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+            </tr>
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">Alex Torres</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">a.torres@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">DevOps</td>
+              <td class="px-5 py-3 text-xs text-muted">4d ago</td>
+              <td class="px-5 py-3"><span class="badge badge-queued" style="font-size:0.6rem;">Inactive</span></td>
+            </tr>
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">Ryan Park</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">r.park@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">ML Engineer</td>
+              <td class="px-5 py-3 text-xs text-muted">7h ago</td>
+              <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+            </tr>
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">Liu Wei</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">l.wei@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">Research Lead</td>
+              <td class="px-5 py-3 text-xs text-muted">12h ago</td>
+              <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+            </tr>
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">admin</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">admin@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">System Admin</td>
+              <td class="px-5 py-3 text-xs text-faint font-mono">2026-04-15</td>
+              <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+            </tr>
+            <tr class="data-row">
+              <td class="px-5 py-3 text-sm text-gray-200 font-medium">svc-deploy</td>
+              <td class="px-5 py-3 text-xs text-muted font-mono">svc-deploy@neuro.ai</td>
+              <td class="px-5 py-3 text-xs text-muted">Service Account</td>
+              <td class="px-5 py-3 text-xs text-faint font-mono">2026-04-28</td>
+              <td class="px-5 py-3"><span class="badge badge-completed" style="font-size:0.6rem;">Active</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="px-5 py-2.5 border-t border-border bg-elevated/20 flex items-center justify-between">
+        <p class="text-[11px] text-faint">9 members · 1 inactive · 1 service account</p>
+        <a href="/dashboard" class="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors">Back to Dashboard</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function togglePw() {
+    const field = document.getElementById('admin-password');
+    const eye = document.getElementById('pw-eye');
+    if (field.type === 'password') {
+      field.type = 'text';
+      eye.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>';
+    } else {
+      field.type = 'password';
+      eye.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>';
+    }
+  }
+
+  async function doAdminLogin(e) {
+    e.preventDefault();
+    const username = document.getElementById('admin-username').value.trim();
+    const password = document.getElementById('admin-password').value;
+    const errEl = document.getElementById('admin-error');
+    const errText = document.getElementById('admin-error-text');
+    const spinner = document.getElementById('admin-spinner');
+    const btnText = document.getElementById('admin-btn-text');
+    const btn = document.getElementById('admin-submit');
+
+    errEl.classList.add('hidden');
+    spinner.classList.remove('hidden');
+    btnText.textContent = 'Authenticating…';
+    btn.disabled = true;
+
+    try {
+      const resp = await fetch('/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await resp.json();
+
+      spinner.classList.add('hidden');
+      btnText.textContent = 'Sign in to Admin Console';
+      btn.disabled = false;
+      errText.textContent = data.detail || 'Invalid credentials.';
+      errEl.classList.remove('hidden');
+    } catch {
+      spinner.classList.add('hidden');
+      btnText.textContent = 'Sign in to Admin Console';
+      btn.disabled = false;
+      errText.textContent = 'Network error. Please try again.';
+      errEl.classList.remove('hidden');
+    }
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,445 @@
+{% extends "base.html" %}
+
+{% block title %}API Keys — Neuro{% endblock %}
+
+{% block body %}
+<!--
+  Neuro Settings — API Keys & Access Tokens
+  Keys scoped to workspace: neuro-prod
+  Last audit: 2026-04-01 by m.chen@neuro.ai
+  TODO: implement key expiry enforcement — currently advisory only (IT#5204)
+-->
+<div class="flex h-screen bg-canvas overflow-hidden">
+
+  <!-- ================================================================
+       SIDEBAR
+  ================================================================ -->
+  <aside class="w-[220px] flex-shrink-0 bg-surface border-r border-border flex flex-col select-none">
+
+    <div class="px-4 py-4 border-b border-border">
+      <div class="flex items-center gap-2.5">
+        <svg class="w-6 h-6 flex-shrink-0" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="28" height="28" rx="6" fill="#6366f1" fill-opacity="0.12"/>
+          <circle cx="14" cy="14" r="4.5" stroke="#6366f1" stroke-width="1.6" fill="none"/>
+          <circle cx="14" cy="14" r="1.8" fill="#6366f1"/>
+          <line x1="14" y1="2" x2="14" y2="8" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="14" y1="20" x2="14" y2="26" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="2" y1="14" x2="8" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="20" y1="14" x2="26" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <span class="text-white font-semibold text-sm tracking-tight">neuro</span>
+          <span class="ml-1.5 text-[10px] font-mono text-faint bg-elevated border border-border px-1.5 py-0.5 rounded">v2.3</span>
+        </div>
+      </div>
+    </div>
+
+    <nav class="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
+      <p class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-faint">Training</p>
+
+      <a href="/dashboard" class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-elevated text-muted hover:text-gray-200 text-sm transition-colors">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 13a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1h-4a1 1 0 01-1-1v-6z"/>
+        </svg>
+        Overview
+      </a>
+
+      <a href="/api/v1/training/jobs" class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-elevated text-muted hover:text-gray-200 text-sm transition-colors">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+        Runs
+      </a>
+
+      <div class="border-t border-border my-2 mx-1"></div>
+      <p class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-faint">Settings</p>
+
+      <a href="/settings/api-keys" class="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-accent-muted text-white text-sm font-medium">
+        <svg class="w-4 h-4 text-indigo-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+        </svg>
+        API Keys
+      </a>
+
+      <div class="border-t border-border my-2 mx-1"></div>
+      <p class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-faint">System</p>
+
+      <a href="/admin" class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-elevated text-muted hover:text-gray-200 text-sm transition-colors">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        Admin
+      </a>
+    </nav>
+
+    <div class="p-3 border-t border-border">
+      <button class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-elevated transition-colors text-left">
+        <div class="w-7 h-7 rounded-lg bg-indigo-500/30 border border-indigo-500/40 flex items-center justify-center text-xs font-bold text-indigo-300 flex-shrink-0">MC</div>
+        <div class="min-w-0 flex-1">
+          <p class="text-xs font-semibold text-gray-200 truncate">Ming Chen</p>
+          <p class="text-[10px] text-faint truncate">m.chen@neuro.ai</p>
+        </div>
+        <svg class="w-3.5 h-3.5 text-faint flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"/>
+        </svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ================================================================
+       MAIN CONTENT
+  ================================================================ -->
+  <div class="flex-1 flex flex-col overflow-hidden min-w-0">
+
+    <!-- Top bar -->
+    <header class="bg-surface border-b border-border px-6 py-3.5 flex items-center justify-between flex-shrink-0">
+      <div>
+        <h2 class="text-sm font-semibold text-white">API Keys &amp; Access Tokens</h2>
+        <p class="text-[11px] text-faint font-mono">workspace: neuro-prod &middot; 4 active keys</p>
+      </div>
+      <button
+        onclick="createNewKey()"
+        class="flex items-center gap-2 bg-accent hover:bg-accent-dim active:scale-[0.99] text-white rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-150">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        Create new key
+      </button>
+    </header>
+
+    <!-- New key reveal banner (shown after create) -->
+    <div id="new-key-banner" class="hidden px-6 py-4 bg-success/10 border-b border-success/20">
+      <div class="flex items-start gap-3">
+        <svg class="w-4 h-4 mt-0.5 text-success flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs font-semibold text-success mb-1">New API key created — copy it now. It will not be shown again.</p>
+          <div class="flex items-center gap-2">
+            <code id="new-key-value" class="flex-1 font-mono text-xs text-gray-100 bg-elevated border border-border rounded-lg px-3 py-2 truncate"></code>
+            <button onclick="copyNewKey()" class="flex-shrink-0 text-xs font-semibold text-success hover:text-white bg-success/20 hover:bg-success/30 border border-success/30 rounded-lg px-3 py-2 transition-colors">Copy</button>
+          </div>
+        </div>
+        <button onclick="document.getElementById('new-key-banner').classList.add('hidden')" class="text-faint hover:text-muted transition-colors flex-shrink-0">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <main class="flex-1 overflow-y-auto p-6">
+
+      <!-- Info notice -->
+      <div class="flex items-start gap-2.5 p-3.5 bg-warn/8 border border-warn/20 rounded-xl text-xs text-yellow-300 mb-5">
+        <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-warn" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+        <span>API keys grant programmatic access to all workspace resources. Treat them like passwords — rotate every 90 days per IT policy. Report lost or compromised keys to <span class="font-mono text-yellow-200">#ai-infra</span>.</span>
+      </div>
+
+      <!-- Keys table -->
+      <div class="bg-surface border border-border rounded-xl shadow-card overflow-hidden">
+
+        <div class="px-5 py-3.5 border-b border-border">
+          <p class="text-xs font-semibold text-white">Active Keys</p>
+        </div>
+
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-border">
+              <th class="px-5 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Name</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Key</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Created</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Last Used</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Expires</th>
+              <th class="px-5 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wider">Actions</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-border/50">
+
+            <!-- svc-deploy key -->
+            <tr class="data-row" id="row-svc-deploy">
+              <td class="px-5 py-3.5">
+                <div class="flex items-center gap-2">
+                  <div class="w-6 h-6 rounded-md bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-[10px] font-bold text-indigo-400 flex-shrink-0">SD</div>
+                  <div>
+                    <p class="text-xs font-semibold text-gray-200">svc-deploy</p>
+                    <p class="text-[10px] text-faint font-mono">CI/CD pipeline token</p>
+                  </div>
+                </div>
+              </td>
+              <td class="px-5 py-3.5">
+                <div class="flex items-center gap-2">
+                  <code class="text-xs font-mono text-gray-300 bg-elevated border border-border rounded px-2 py-1 select-all">nro-f7a2b9c1d4e8****************************</code>
+                  <button
+                    onclick="recordKeyAccess('svc-deploy')"
+                    class="text-faint hover:text-muted transition-colors"
+                    title="Copy to clipboard">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                  </button>
+                </div>
+              </td>
+              <td class="px-5 py-3.5 text-xs text-muted font-mono">2026-01-15</td>
+              <td class="px-5 py-3.5 text-xs text-muted font-mono">2026-05-26 04:11</td>
+              <td class="px-5 py-3.5">
+                <span class="inline-flex items-center text-[10px] font-mono font-medium text-warn bg-warn/8 border border-warn/25 px-1.5 py-0.5 rounded-full">
+                  2026-07-15
+                </span>
+              </td>
+              <td class="px-5 py-3.5 text-right">
+                <button onclick="revokeKey('svc-deploy')" class="text-xs text-danger hover:text-red-300 transition-colors">Revoke</button>
+              </td>
+            </tr>
+
+            <!-- monitoring-agent key -->
+            <tr class="data-row" id="row-monitoring-agent">
+              <td class="px-5 py-3.5">
+                <div class="flex items-center gap-2">
+                  <div class="w-6 h-6 rounded-md bg-success/15 border border-success/25 flex items-center justify-center text-[10px] font-bold text-success flex-shrink-0">MA</div>
+                  <div>
+                    <p class="text-xs font-semibold text-gray-200">monitoring-agent</p>
+                    <p class="text-[10px] text-faint font-mono">Prometheus / metrics exporter</p>
+                  </div>
+                </div>
+              </td>
+              <td class="px-5 py-3.5">
+                <div class="flex items-center gap-2">
+                  <code class="text-xs font-mono text-gray-300 bg-elevated border border-border rounded px-2 py-1 select-all">nro-3e5d1f9a0b6c****************************</code>
+                  <button
+                    onclick="recordKeyAccess('monitoring-agent')"
+                    class="text-faint hover:text-muted transition-colors"
+                    title="Copy to clipboard">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                  </button>
+                </div>
+              </td>
+              <td class="px-5 py-3.5 text-xs text-muted font-mono">2026-02-03</td>
+              <td class="px-5 py-3.5 text-xs text-muted font-mono">2026-05-26 05:00</td>
+              <td class="px-5 py-3.5">
+                <span class="inline-flex items-center text-[10px] font-mono font-medium text-success bg-success/10 border border-success/20 px-1.5 py-0.5 rounded-full">
+                  2026-08-03
+                </span>
+              </td>
+              <td class="px-5 py-3.5 text-right">
+                <button onclick="revokeKey('monitoring-agent')" class="text-xs text-danger hover:text-red-300 transition-colors">Revoke</button>
+              </td>
+            </tr>
+
+            <!-- m.chen personal key -->
+            <tr class="data-row" id="row-m-chen-dev">
+              <td class="px-5 py-3.5">
+                <div class="flex items-center gap-2">
+                  <div class="w-6 h-6 rounded-md bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-[10px] font-bold text-indigo-400 flex-shrink-0">MC</div>
+                  <div>
+                    <p class="text-xs font-semibold text-gray-200">m.chen-dev</p>
+                    <p class="text-[10px] text-faint font-mono">Personal development key</p>
+                  </div>
+                </div>
+              </td>
+              <td class="px-5 py-3.5">
+                <div class="flex items-center gap-2">
+                  <code class="text-xs font-mono text-gray-300 bg-elevated border border-border rounded px-2 py-1 select-all">nro-8c4a2e7f1b9d****************************</code>
+                  <button
+                    onclick="recordKeyAccess('m.chen-dev')"
+                    class="text-faint hover:text-muted transition-colors"
+                    title="Copy to clipboard">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                  </button>
+                </div>
+              </td>
+              <td class="px-5 py-3.5 text-xs text-muted font-mono">2026-03-20</td>
+              <td class="px-5 py-3.5 text-xs text-muted font-mono">2026-05-24 17:33</td>
+              <td class="px-5 py-3.5">
+                <span class="inline-flex items-center text-[10px] font-mono font-medium text-success bg-success/10 border border-success/20 px-1.5 py-0.5 rounded-full">
+                  2026-09-20
+                </span>
+              </td>
+              <td class="px-5 py-3.5 text-right">
+                <button onclick="revokeKey('m.chen-dev')" class="text-xs text-danger hover:text-red-300 transition-colors">Revoke</button>
+              </td>
+            </tr>
+
+            <!-- priya.nair data-pipeline key -->
+            <tr class="data-row" id="row-p-nair-pipeline">
+              <td class="px-5 py-3.5">
+                <div class="flex items-center gap-2">
+                  <div class="w-6 h-6 rounded-md bg-violet-500/20 border border-violet-500/30 flex items-center justify-center text-[10px] font-bold text-violet-400 flex-shrink-0">PN</div>
+                  <div>
+                    <p class="text-xs font-semibold text-gray-200">priya.nair-pipeline</p>
+                    <p class="text-[10px] text-faint font-mono">Dataset ingestion pipeline</p>
+                  </div>
+                </div>
+              </td>
+              <td class="px-5 py-3.5">
+                <div class="flex items-center gap-2">
+                  <code class="text-xs font-mono text-gray-300 bg-elevated border border-border rounded px-2 py-1 select-all">nro-d2f6e0c9a3b7****************************</code>
+                  <button
+                    onclick="recordKeyAccess('priya.nair-pipeline')"
+                    class="text-faint hover:text-muted transition-colors"
+                    title="Copy to clipboard">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                  </button>
+                </div>
+              </td>
+              <td class="px-5 py-3.5 text-xs text-muted font-mono">2026-04-01</td>
+              <td class="px-5 py-3.5 text-xs text-muted font-mono">2026-05-25 22:15</td>
+              <td class="px-5 py-3.5">
+                <span class="inline-flex items-center text-[10px] font-mono font-medium text-success bg-success/10 border border-success/20 px-1.5 py-0.5 rounded-full">
+                  2026-10-01
+                </span>
+              </td>
+              <td class="px-5 py-3.5 text-right">
+                <button onclick="revokeKey('priya.nair-pipeline')" class="text-xs text-danger hover:text-red-300 transition-colors">Revoke</button>
+              </td>
+            </tr>
+
+          </tbody>
+        </table>
+
+        <div class="px-5 py-3 border-t border-border bg-canvas flex items-center justify-between">
+          <p class="text-xs text-faint">4 active keys in workspace <span class="font-mono">neuro-prod</span></p>
+          <p class="text-xs text-faint">Keys shown partially redacted — click copy to retrieve full value</p>
+        </div>
+      </div>
+
+      <!-- Key format reference -->
+      <div class="mt-4 p-4 bg-surface border border-border rounded-xl text-xs text-muted">
+        <p class="font-semibold text-gray-300 mb-1.5">Key format</p>
+        <p>All Neuro API keys follow the format <code class="font-mono text-gray-200 bg-elevated px-1.5 py-0.5 rounded">nro-</code> followed by 32 lowercase alphanumeric characters. Keys are workspace-scoped and can be used with the <code class="font-mono text-gray-200 bg-elevated px-1.5 py-0.5 rounded">Authorization: Bearer &lt;key&gt;</code> header.</p>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<!-- Revoke confirmation modal -->
+<div id="revoke-modal" class="hidden fixed inset-0 z-30 flex items-center justify-center px-4">
+  <div class="absolute inset-0 bg-canvas/80 backdrop-blur-sm" onclick="closeRevokeModal()"></div>
+  <div class="relative w-full max-w-[360px] bg-surface border border-border rounded-2xl shadow-card p-6">
+    <div class="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-red-500/40 to-transparent rounded-full"></div>
+    <div class="flex items-start gap-3 mb-4">
+      <div class="w-9 h-9 rounded-xl bg-danger/8 border border-danger/20 flex items-center justify-center flex-shrink-0">
+        <svg class="w-4 h-4 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+      </div>
+      <div>
+        <h3 class="text-sm font-semibold text-white">Revoke API key?</h3>
+        <p class="text-xs text-muted mt-0.5">Key <span id="revoke-key-name" class="font-mono text-gray-300"></span> will be permanently invalidated.</p>
+      </div>
+    </div>
+    <p class="text-xs text-muted mb-4 leading-relaxed">Any service using this key will lose access immediately. This action cannot be undone.</p>
+    <div class="flex items-center gap-2 justify-end">
+      <button onclick="closeRevokeModal()" class="px-4 py-2 text-sm font-medium text-muted hover:text-gray-200 rounded-xl hover:bg-elevated border border-transparent hover:border-border transition-colors">Cancel</button>
+      <button onclick="confirmRevoke()" class="px-4 py-2 text-sm font-semibold text-white bg-danger hover:bg-danger/80 rounded-xl transition-colors">Revoke key</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  var _pendingRevoke = null;
+
+  function recordKeyAccess(keyName) {
+    fetch('/api/v1/telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'key_access',
+        key_name: keyName,
+        page: location.pathname,
+        ts: Date.now(),
+      }),
+      keepalive: true,
+    }).catch(function() {});
+
+    var rows = document.querySelectorAll('[id^="row-"]');
+    rows.forEach(function(row) {
+      var cells = row.querySelectorAll('td code');
+      cells.forEach(function(cell) {
+        if (row.id.indexOf(keyName.replace(/\./g, '-').replace(/@/g, '')) >= 0) {
+          var original = cell.textContent;
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(original).catch(function() {});
+          }
+        }
+      });
+    });
+  }
+
+  function createNewKey() {
+    fetch('/settings/api-keys/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace: 'neuro-prod' }),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var key = data.key || ('nro-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2));
+      document.getElementById('new-key-value').textContent = key;
+      document.getElementById('new-key-banner').classList.remove('hidden');
+    })
+    .catch(function() {
+      var key = 'nro-' + Math.random().toString(36).slice(2, 18) + Math.random().toString(36).slice(2, 18);
+      document.getElementById('new-key-value').textContent = key;
+      document.getElementById('new-key-banner').classList.remove('hidden');
+    });
+  }
+
+  function copyNewKey() {
+    var val = document.getElementById('new-key-value').textContent;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(val).catch(function() {});
+    }
+    fetch('/api/v1/telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'key_access',
+        key_name: 'new-key',
+        page: location.pathname,
+        ts: Date.now(),
+      }),
+      keepalive: true,
+    }).catch(function() {});
+  }
+
+  function revokeKey(keyName) {
+    _pendingRevoke = keyName;
+    document.getElementById('revoke-key-name').textContent = keyName;
+    document.getElementById('revoke-modal').classList.remove('hidden');
+  }
+
+  function closeRevokeModal() {
+    _pendingRevoke = null;
+    document.getElementById('revoke-modal').classList.add('hidden');
+  }
+
+  function confirmRevoke() {
+    if (!_pendingRevoke) return;
+    fetch('/settings/api-keys/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key_name: _pendingRevoke }),
+    }).catch(function() {});
+    var safeName = _pendingRevoke.replace(/\./g, '-').replace(/@/g, '');
+    var row = document.getElementById('row-' + safeName);
+    if (row) {
+      row.style.opacity = '0.3';
+      row.style.pointerEvents = 'none';
+    }
+    closeRevokeModal();
+  }
+</script>
+{% endblock %}
