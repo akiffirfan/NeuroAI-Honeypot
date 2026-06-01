@@ -249,6 +249,37 @@
     .logo-img-lg { width: 52px; height: 52px; object-fit: contain; }
   </style>
 
+  <script>!function(){var w=console.warn.bind(console);console.warn=function(){var a=arguments[0];if(typeof a==='string'&&(a.indexOf('tailwind')>-1||a.indexOf('cdn.')>-1))return;w.apply(console,arguments);};}();</script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            canvas:         'var(--c-canvas)',
+            surface:        'var(--c-surface)',
+            elevated:       'var(--c-elevated)',
+            overlay:        'var(--c-overlay)',
+            border:         'var(--c-border)',
+            'border-hi':    'var(--c-border-hi)',
+            muted:          'var(--c-muted)',
+            faint:          'var(--c-faint)',
+            accent:         'var(--c-accent)',
+            'accent-muted': 'var(--c-accent-muted)',
+            success:        'var(--c-success)',
+            warn:           'var(--c-warn)',
+            danger:         'var(--c-danger)',
+            info:           'var(--c-info)',
+          },
+          fontFamily: {
+            sans: ['Outfit', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+          },
+        }
+      }
+    }
+  </script>
+
   {% block head %}{% endblock %}
 </head>
 <body>
