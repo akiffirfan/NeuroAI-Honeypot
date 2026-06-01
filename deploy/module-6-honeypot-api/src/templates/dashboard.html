@@ -104,10 +104,22 @@
         <p id="topbar-subtitle" style="font-size:11px;color:var(--c-faint);" class="mono">build 20260428 &middot; workspace: neuro-prod</p>
       </div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <a href="/notifications" style="position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;background:var(--c-elevated);border:1px solid var(--c-border);text-decoration:none;transition:border-color 0.15s;" onmouseover="this.style.borderColor='var(--c-border-hi)'" onmouseout="this.style.borderColor='var(--c-border)'">
-          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="color:var(--c-muted);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
-          <span style="position:absolute;top:-4px;right:-4px;width:14px;height:14px;border-radius:50%;background:#ef4444;font-size:8px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--c-canvas);">3</span>
-        </a>
+        <div style="position:relative;">
+          <button onclick="toggleNotifDD(event)" style="position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;background:var(--c-elevated);border:1px solid var(--c-border);cursor:pointer;transition:border-color 0.15s;" onmouseover="this.style.borderColor='var(--c-border-hi)'" onmouseout="this.style.borderColor='var(--c-border)'">
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="color:var(--c-muted);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+            <span id="notif-badge" style="position:absolute;top:-4px;right:-4px;width:14px;height:14px;border-radius:50%;background:#ef4444;font-size:8px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--c-canvas);">3</span>
+          </button>
+          <div id="notif-dd" style="display:none;position:absolute;top:calc(100% + 8px);right:0;width:320px;background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.4);z-index:200;overflow:hidden;">
+            <div style="padding:10px 14px 8px;border-bottom:1px solid var(--c-border);display:flex;align-items:center;justify-content:space-between;">
+              <span style="font-size:12px;font-weight:600;color:#fff;">Notifications</span>
+              <span style="font-size:10px;color:#ef4444;font-weight:600;">3 unread</span>
+            </div>
+            <div id="notif-dd-items"></div>
+            <div style="padding:8px 14px;border-top:1px solid var(--c-border);text-align:center;">
+              <a href="/notifications" style="font-size:11px;color:#6366f1;text-decoration:none;font-weight:500;">View all notifications &rarr;</a>
+            </div>
+          </div>
+        </div>
         <div style="position:relative;">
           <button onclick="toggleGpuDD(event)" style="display:flex;align-items:center;gap:8px;background:var(--c-elevated);border:1px solid var(--c-border);border-radius:9px;padding:6px 12px;font-size:12px;cursor:pointer;transition:border-color 0.15s;" onmouseover="this.style.borderColor='var(--c-border-hi)'" onmouseout="this.style.borderColor='var(--c-border)'">
             <span class="pulse" style="width:6px;height:6px;border-radius:50%;background:var(--c-success);flex-shrink:0;"></span>
@@ -774,6 +786,43 @@ function toggleUserPopup(e) {
 document.addEventListener('click', () => {
   ['gpu-dd','user-popup'].forEach(id => { const el=document.getElementById(id); if(el){el.classList.add('hidden');el.style.display='none';} });
 });
+
+// ── Notification dropdown ─────────────────────────────────────────────────────
+var NOTIF_ITEMS = [
+  {id:'n-001', icon:'🔴', title:'Disk alert — neuro-train-01', body:'Disk at 87% on /data/checkpoints. SSH in to clean up.', ts:'5 min ago'},
+  {id:'n-002', icon:'✅', title:'run-001 completed', body:'Checkpoint saved to neuro-train-01.internal:/data/checkpoints/run-001/step-5000.', ts:'2h ago'},
+  {id:'n-003', icon:'⚠️', title:'API key expiring — priya.nair-pipeline', body:'Expires 2026-06-15. Rotate before pipeline breaks.', ts:'3h ago'},
+];
+(function buildNotifDD() {
+  var c = document.getElementById('notif-dd-items');
+  if (!c) return;
+  NOTIF_ITEMS.forEach(function(n) {
+    var d = document.createElement('div');
+    d.style.cssText = 'padding:10px 14px;border-bottom:1px solid var(--c-border);cursor:pointer;transition:background 0.1s;';
+    d.onmouseover = function(){ d.style.background='var(--c-elevated)'; };
+    d.onmouseout  = function(){ d.style.background=''; };
+    d.innerHTML = '<div style="display:flex;align-items:flex-start;gap:8px;">'
+      + '<span style="font-size:13px;flex-shrink:0;margin-top:1px;">' + n.icon + '</span>'
+      + '<div style="flex:1;min-width:0;">'
+      +   '<p style="font-size:11px;font-weight:600;color:#fff;margin:0 0 2px;">' + n.title + '</p>'
+      +   '<p style="font-size:10px;color:var(--c-muted);margin:0;line-height:1.4;">' + n.body + '</p>'
+      +   '<p style="font-size:9px;color:var(--c-faint);margin:3px 0 0;" class="mono">' + n.ts + '</p>'
+      + '</div></div>';
+    d.addEventListener('click', function() {
+      fetch('/api/v1/telemetry', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({type:'notification_clicked', notif_id:n.id, title:n.title, ts:Date.now()})}).catch(function(){});
+      closeNotifDD();
+    });
+    c.appendChild(d);
+  });
+})();
+function toggleNotifDD(e) {
+  e.stopPropagation();
+  var dd = document.getElementById('notif-dd');
+  dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+}
+function closeNotifDD() { var dd = document.getElementById('notif-dd'); if(dd) dd.style.display='none'; }
+document.addEventListener('click', function(e) { if (!e.target.closest('#notif-dd') && !e.target.closest('[onclick*="toggleNotifDD"]')) closeNotifDD(); });
 
 // ── Dataset download telemetry ────────────────────────────────────────────────
 function downloadDataset(btn) {
