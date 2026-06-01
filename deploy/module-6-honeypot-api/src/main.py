@@ -206,6 +206,7 @@ _LURE_PATHS = {
     "/api/v1/internal/debug",
     "/admin/users",
     "/.git/config",
+    "/.git/HEAD",
     "/api/v1/data/download",
     "/artifacts",
     "/jobs/new",
@@ -559,8 +560,13 @@ async def request_logger(request: Request, call_next):
 
     # Attach deceptive response headers (plans.md Section 4.1)
     response.headers["X-Powered-By"] = "FastAPI/0.104.1"
-    response.headers["X-Debug-Mode"] = "enabled"
     response.headers["Server"] = "uvicorn"
+    if is_lure:
+        response.headers["X-Debug-Mode"] = "enabled"
+    else:
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
     # Set / refresh session cookie (secure=False — HTTP-only deployment on port 8081)
     response.set_cookie(
@@ -1724,6 +1730,28 @@ async def manifest():
 @app.get("/apple-touch-icon.png")
 async def apple_touch_icon():
     return Response(status_code=204)
+
+
+@app.get("/.git/config")
+async def git_config(request: Request):
+    return PlainTextResponse(
+        '[core]\n'
+        '\trepositoryformatversion = 0\n'
+        '\tfilemode = true\n'
+        '\tbare = false\n'
+        '\tlogallrefupdates = true\n'
+        '[remote "origin"]\n'
+        '\turl = git@github.com:cyvera-ai/neuro-platform.git\n'
+        '\tfetch = +refs/heads/*:refs/heads/*\n'
+        '[branch "main"]\n'
+        '\tremote = origin\n'
+        '\tmerge = refs/heads/main\n'
+    )
+
+
+@app.get("/.git/HEAD")
+async def git_head(request: Request):
+    return PlainTextResponse("ref: refs/heads/main\n")
 
 
 # ---------------------------------------------------------------------------

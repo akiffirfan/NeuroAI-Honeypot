@@ -253,6 +253,14 @@
 </head>
 <body>
   {% block body %}{% endblock %}
+  {% block footer %}
+  <footer style="border-top:1px solid var(--c-border);padding:14px 24px;text-align:center;font-size:11px;color:var(--c-faint);">
+    &copy; 2025 Cyvera AI Infrastructure Ltd &middot; Neuro v2.3.1 &middot;
+    <a href="/terms" style="color:var(--c-faint);text-decoration:none;">Terms</a> &middot;
+    <a href="/privacy" style="color:var(--c-faint);text-decoration:none;">Privacy</a> &middot;
+    <a href="/api/v1/health" style="color:var(--c-faint);text-decoration:none;">Status</a>
+  </footer>
+  {% endblock %}
   {% block scripts %}{% endblock %}
 </body>
 </html>
