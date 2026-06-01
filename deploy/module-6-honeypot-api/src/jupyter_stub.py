@@ -304,7 +304,7 @@ async def list_contents(request: Request, path: str = ""):
                 "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"}},
                 "cells": [
                     {"cell_type": "markdown", "source": "# Model Training\n\nThis notebook trains the LLaMA3 finetune model.\n\nAWS credentials loaded from environment.\n"},
-                    {"cell_type": "code", "source": "import boto3\nimport os\n# Credentials from env\naws_key = os.environ.get('AWS_ACCESS_KEY_ID', 'AKIAQF3ZXVN2MPLR8KT4')\ns3 = boto3.client('s3', aws_access_key_id=aws_key)\n", "outputs": []},
+                    {"cell_type": "code", "source": "import boto3\nimport os\n# Credentials from env\naws_key = os.environ.get('AWS_ACCESS_KEY_ID', 'AKIAYZM57LXRGIYTCOUV')\ns3 = boto3.client('s3', aws_access_key_id=aws_key)\n", "outputs": []},
                 ],
             },
         }

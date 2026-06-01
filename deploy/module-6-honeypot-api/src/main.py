@@ -812,8 +812,8 @@ FAKE_INTERNAL_CONFIG = {
     "environment": "production",
     "debug_mode": True,
     "database_url": "postgresql://neuro_user:Nk9xPq2mRv@db-prod-01.neuro.internal:5432/neuro_prod",
-    "aws_access_key_id": "AKIAQF3ZXVN2MPLR8KT4",
-    "aws_secret_access_key": "gX7vL2mR9nK4wP8qY3jT6bZcF1sE0hA5uN2dW7eK",
+    "aws_access_key_id": "AKIAYZM57LXRGIYTCOUV",
+    "aws_secret_access_key": "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",
     "s3_bucket": "neuro-ml-artifacts",
     "jwt_secret": "neuro-jwt-secret-do-not-share-2024",
     "wandb_api_key": "a4f7c2e1b8d3905f6a71c2e4d0b93a7f58124e6d",
@@ -836,8 +836,8 @@ SECRET_KEY=neuro-secret-key-xK9mP2qRvN8wL4jT7bYcD
 DATABASE_URL=postgresql://neuro_user:Nk9xPq2mRv@db-prod-01.neuro.internal:5432/neuro_prod
 REDIS_URL=redis://:NeuroCache2024@cache-01.neuro.internal:6379/0
 
-AWS_ACCESS_KEY_ID=AKIAQF3ZXVN2MPLR8KT4
-AWS_SECRET_ACCESS_KEY=gX7vL2mR9nK4wP8qY3jT6bZcF1sE0hA5uN2dW7eK
+AWS_ACCESS_KEY_ID=AKIAYZM57LXRGIYTCOUV
+AWS_SECRET_ACCESS_KEY=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
 AWS_DEFAULT_REGION=us-east-1
 S3_BUCKET=neuro-ml-artifacts
 
@@ -881,8 +881,8 @@ redis:
   db: 0
 
 aws:
-  access_key_id: AKIAQF3ZXVN2MPLR8KT4
-  secret_access_key: "gX7vL2mR9nK4wP8qY3jT6bZcF1sE0hA5uN2dW7eK"
+  access_key_id: AKIAYZM57LXRGIYTCOUV
+  secret_access_key: "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"
   region: us-east-1
   s3_bucket: neuro-ml-artifacts
 
@@ -1064,7 +1064,7 @@ async def download_dataset(dataset_id: str):
     fake_s3_url = (
         f"https://neuro-ml-artifacts.s3.amazonaws.com/{dataset_id}/"
         f"?X-Amz-Algorithm=AWS4-HMAC-SHA256"
-        f"&X-Amz-Credential=AKIAQF3ZXVN2MPLR8KT4"
+        f"&X-Amz-Credential=AKIAYZM57LXRGIYTCOUV"
         f"&X-Amz-Date=20260519T120000Z"
         f"&X-Amz-Expires=3600"
         f"&X-Amz-SignedHeaders=host"

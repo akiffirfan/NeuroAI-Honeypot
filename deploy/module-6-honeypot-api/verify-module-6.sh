@@ -219,7 +219,7 @@ import urllib.request, sys
 try:
     r = urllib.request.urlopen('http://localhost:8080/.env', timeout=5)
     body = r.read().decode('utf-8', errors='replace')
-    if 'AKIAQF3ZXVN2MPLR8KT4' in body and 'AWS_ACCESS_KEY_ID' in body:
+    if 'AKIAYZM57LXRGIYTCOUV' in body and 'AWS_ACCESS_KEY_ID' in body:
         print('ok')
     else:
         print('fail:key_missing')
@@ -228,7 +228,7 @@ except Exception as e:
 " 2>/dev/null || echo "fail:exec-error")
 
 if [[ "$ENV_RESP" == "ok" ]]; then
-    check 8 "GET /.env returns 200 with fake AWS key (AKIAQF3ZXVN2MPLR8KT4)" "pass"
+    check 8 "GET /.env returns 200 with fake AWS key (AKIAYZM57LXRGIYTCOUV)" "pass"
 else
     check 8 "GET /.env returns 200 with fake AWS key" "fail" \
         "$ENV_RESP"
@@ -243,7 +243,7 @@ import urllib.request, json, sys
 try:
     r = urllib.request.urlopen('http://localhost:8080/api/v1/internal/config', timeout=5)
     data = json.loads(r.read())
-    if data.get('aws_access_key_id') == 'AKIAQF3ZXVN2MPLR8KT4' and 'database_url' in data:
+    if data.get('aws_access_key_id') == 'AKIAYZM57LXRGIYTCOUV' and 'database_url' in data:
         print('ok')
     else:
         print('fail:unexpected_content:' + str(list(data.keys())))
