@@ -207,6 +207,8 @@ _LURE_PATHS = {
     "/admin/users",
     "/.git/config",
     "/.git/HEAD",
+    "/notifications",
+    "/settings/profile",
     "/api/v1/data/download",
     "/artifacts",
     "/jobs/new",
@@ -1538,6 +1540,20 @@ async def datasets_page(request: Request):
     if not _session_ok(request):
         return RedirectResponse(url="/", status_code=302)
     return templates.TemplateResponse("datasets.html", {"request": request})
+
+
+@app.get("/notifications")
+async def notifications_page(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("notifications.html", {"request": request})
+
+
+@app.get("/settings/profile")
+async def settings_profile_page(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("settings_profile.html", {"request": request})
 
 
 @app.get("/settings/workspace")
