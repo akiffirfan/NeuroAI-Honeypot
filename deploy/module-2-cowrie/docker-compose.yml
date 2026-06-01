@@ -38,11 +38,11 @@ networks:
     name: honeypot-net      # canonical name — overrides compose project-name prefix so other
                             # modules can join it as external: true without knowing the project name
     driver: bridge
-    internal: false         # must be false for Docker to publish Cowrie's port 2222 to loopback;
-                            # see CLAUDE.md "Docker port publishing with internal: true networks"
+    internal: false         # must be false — Cowrie needs direct internet egress for payload downloads
+                            # (treq library ignores $http_proxy; no proxy path available)
     ipam:
       config:
-        - subnet: 172.20.0.0/24
+        - subnet: 10.10.20.0/24   # changed from 172.20.0.0/24 — all 172.20-22.0.0/16 ranges taken by existing VPS networks
     # Other honeypot modules (honeypot-api, opencanary, mariadb-lure, log-shipper) will
     # join this network when they are deployed. The network is created here and must
     # already exist when later modules are brought up.
@@ -79,16 +79,13 @@ services:
     cap_drop:
       - ALL
     networks:
-      - honeypot-net
-    ports:
-      - "0.0.0.0:2222:2222"    # bind all interfaces so Docker uses kernel DNAT (preserves real src IP);
-                                  # port 2222 is blocked at DO cloud firewall — only DNAT'd port 22 traffic reaches this
-    # DNAT (manual operator step after verify passes):
-    #   nft add rule ip nat PREROUTING tcp dport 22 dnat to 127.0.0.1:2222
-    # WHY loopback, not container IP: internal:true networks block PREROUTING DNAT→container
-    # directly because Docker's FORWARD chain drops external→internal traffic. Publishing
-    # to 127.0.0.1:2222 lets Docker handle the inner NAT; our outer DNAT only needs to
-    # redirect port 22 to the loopback port that Docker is already listening on.
+      honeypot-net:
+        ipv4_address: 10.10.20.8  # pinned — DNAT rule in honeypot-dnat.sh targets this IP
+    # NO host ports: binding — removed 2026-05-30.
+    # The nft DNAT rule (honeypot-dnat.sh) sends port-22 traffic directly to the container
+    # IP (10.10.20.8:2222) on honeypot-net, bypassing docker-proxy entirely. A published
+    # host port is not needed and conflicts with the friend's HoneyDash Cowrie on port 2222.
+    # Source IP preservation: guaranteed by direct container-IP DNAT (not loopback DNAT).
     volumes:
       - cowrie-logs:/cowrie/var/log/cowrie
       - cowrie-state:/cowrie/cowrie-git/var/lib/cowrie

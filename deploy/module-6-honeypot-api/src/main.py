@@ -210,6 +210,12 @@ _LURE_PATHS = {
     "/artifacts",
     "/jobs/new",
     "/settings/api-keys",
+    "/api/v1/lure/model-manifest",
+    "/auth/forgot-password",
+    "/api/v1/cluster/nodes",
+    "/runs",
+    "/models",
+    "/datasets",
 }
 
 # Known scanner User-Agent fragments for bot scoring
@@ -267,6 +273,7 @@ def _log_event(event: dict[str, Any]) -> None:
     Failures are logged but never raise — we never drop a response because logging failed.
     """
     # PostgreSQL insert
+    inserted = False
     try:
         conn = _get_pg()
         cur = conn.cursor()
@@ -291,8 +298,35 @@ def _log_event(event: dict[str, Any]) -> None:
             event,
         )
         cur.close()
+        inserted = True
     except Exception as exc:
         logger.error("pg_insert_error", error=str(exc), event_id=event.get("event_id"))
+
+    # Upsert attacker_sessions — best-effort, only on successful INSERT
+    if inserted and event.get("session_id") and event.get("src_ip"):
+        try:
+            conn = _get_pg()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO attacker_sessions
+                    (session_id, src_ip, first_seen, last_seen, event_count, sensors_hit)
+                VALUES
+                    (%(session_id)s, %(src_ip)s, %(created_at)s, %(created_at)s, 1, ARRAY[%(sensor)s])
+                ON CONFLICT (session_id) DO UPDATE
+                    SET last_seen   = EXCLUDED.last_seen,
+                        event_count = attacker_sessions.event_count + 1,
+                        sensors_hit = CASE
+                            WHEN EXCLUDED.sensors_hit[1] = ANY(attacker_sessions.sensors_hit)
+                            THEN attacker_sessions.sensors_hit
+                            ELSE array_append(attacker_sessions.sensors_hit, EXCLUDED.sensors_hit[1])
+                        END
+                """,
+                event,
+            )
+            cur.close()
+        except Exception as exc:
+            logger.warning("session_upsert_error", error=str(exc), session_id=event.get("session_id"))
 
     # Redis Stream publish
     try:
@@ -397,6 +431,9 @@ async def request_logger(request: Request, call_next):
     # Call the actual endpoint
     response: Response = await call_next(request)
 
+    # Check for lure credential match signalled by api_auth()
+    _lure_cred_hit = response.headers.get("X-Lure-Credential-Used") == "true"
+
     # Compute latency
     latency_ms = (time.time() - request_start) * 1000
 
@@ -451,8 +488,11 @@ async def request_logger(request: Request, call_next):
     ua_str = request.headers.get("user-agent", "")
     snare_hit = _detect_web_attack(path, query_str, body_str, ua_str)
 
-    # If a SNARE attack was detected, override event_type with the attack event ID
-    if snare_hit:
+    # Determine event_type — lure credential match takes priority over SNARE detection
+    if _lure_cred_hit:
+        event_type = "http.lure.credential.success"
+        snare_attack_type = "Lure Credential"
+    elif snare_hit:
         event_type = snare_hit[0]
         snare_attack_type = snare_hit[1]
     else:
@@ -512,6 +552,10 @@ async def request_logger(request: Request, call_next):
         elif is_login and username:
             # Credential submission — push with login label
             asyncio.create_task(_push_honeydash_async(event, "SSH Login"))
+
+    # Strip internal signalling header — must never reach the client
+    if "X-Lure-Credential-Used" in response.headers:
+        del response.headers["X-Lure-Credential-Used"]
 
     # Attach deceptive response headers (plans.md Section 4.1)
     response.headers["X-Powered-By"] = "FastAPI/0.104.1"
@@ -791,6 +835,10 @@ AWS_SECRET_ACCESS_KEY=gX7vL2mR9nK4wP8qY3jT6bZcF1sE0hA5uN2dW7eK
 AWS_DEFAULT_REGION=us-east-1
 S3_BUCKET=neuro-ml-artifacts
 
+TRAIN_NODE_SSH_KEY=/home/neuro-svc/.ssh/id_ed25519
+TRAIN_NODE_HOST=neuro-train-01.internal
+TRAIN_NODE_IP=10.31.4.22
+
 WANDB_API_KEY=a4f7c2e1b8d3905f6a71c2e4d0b93a7f58124e6d
 OPENAI_API_KEY=sk-proj-p8Kz2mRvN4wL9jT7bYcDxQ3aF6sE1hU5nM0qW8dP
 HF_TOKEN=hf_pRmKvN8wL4jT7bYcDxQ3aF6sE1hU5nM0qW8d
@@ -835,7 +883,7 @@ aws:
 auth:
   jwt_secret: "neuro-jwt-secret-do-not-share-2024"
   token_expiry_hours: 24
-  sso_provider: "https://login.microsoftonline.com/neurodata.onmicrosoft.com/v2.0"
+  sso_provider: "https://accounts.google.com/o/oauth2/v2/auth"
 
 monitoring:
   wandb_api_key: a4f7c2e1b8d3905f6a71c2e4d0b93a7f58124e6d
@@ -881,9 +929,14 @@ FAKE_DEBUG_INFO = {
     "db_pool": {"size": 10, "checked_out": 3, "overflow": 0},
     "redis_host": "cache-01.neuro.internal",
     "gpu_nodes": {
-        "node-gpu-01": "idle", "node-gpu-02": "idle", "node-gpu-03": "busy",
-        "node-gpu-04": "idle", "node-gpu-05": "error", "node-gpu-06": "paused",
-        "node-gpu-07": "busy", "node-gpu-08": "idle",
+        "node-gpu-01.neuro.internal (10.31.1.11)": "idle",
+        "node-gpu-02.neuro.internal (10.31.1.12)": "idle",
+        "node-gpu-03.neuro.internal (10.31.1.13)": "busy",
+        "node-gpu-04.neuro.internal (10.31.1.14)": "idle",
+        "node-gpu-05.neuro.internal (10.31.1.15)": "error",
+        "node-gpu-06.neuro.internal (10.31.1.16)": "paused",
+        "node-gpu-07.neuro.internal (10.31.1.17)": "busy",
+        "node-gpu-08.neuro.internal (10.31.1.18)": "idle",
     },
     "active_sessions": 14,
     "uptime_seconds": 1_847_302,
@@ -1057,6 +1110,42 @@ async def internal_config():
     """Crown jewel — full fake config dump with all secrets (plans.md Section 4.2)."""
     await _jitter()
     return FAKE_INTERNAL_CONFIG
+
+
+@app.get("/api/v1/cluster/nodes")
+async def cluster_nodes(request: Request):
+    """GPU training cluster node list — bridges HTTP recon to SSH sensor."""
+    await _jitter()
+    return JSONResponse({
+        "cluster": "neuro-train-cluster",
+        "updated_at": "2026-05-31T08:00:00Z",
+        "nodes": [
+            {
+                "name": "neuro-train-01",
+                "ip": "10.31.4.22",
+                "status": "running",
+                "ssh_port": 22,
+                "ssh_fingerprint": "SHA256:k3YxPq9mRvN4wZj2sBtL7uCeIoAhGfDy",
+                "gpu_util": 87.4,
+                "gpu_mem_used_gb": 38.2,
+                "gpu_mem_total_gb": 40.0,
+                "role": "primary",
+                "running_job": "run-047-llama3-finetune",
+                "note": "Direct SSH requires neuro-svc credentials. See /config.yaml."
+            },
+            {
+                "name": "neuro-train-02",
+                "ip": "10.31.4.23",
+                "status": "idle",
+                "ssh_port": 22,
+                "ssh_fingerprint": "SHA256:m5VwRq3nKt8pXd1yBzNjLaFeHiSgCuOe",
+                "gpu_util": 0.0,
+                "gpu_mem_used_gb": 0.1,
+                "gpu_mem_total_gb": 40.0,
+                "role": "standby"
+            }
+        ]
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1252,6 +1341,8 @@ async def api_auth(request: Request, response: Response):
             samesite="lax",
             max_age=86400,
         )
+        # Signal to middleware to override event_type — stripped before sending to client
+        resp.headers["X-Lure-Credential-Used"] = "true"
         return resp
 
     # DEMO_SQLI_BYPASS: when enabled, a detected SQLi pattern in the login body
@@ -1389,7 +1480,8 @@ async def artifacts_page(request: Request, path: str = ""):
 
 @app.get("/jobs/new")
 async def jobs_new_page(request: Request):
-    """Training job submission form — RCE trap via startup_script field."""
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
     return templates.TemplateResponse("jobs_new.html", {"request": request})
 
 
@@ -1421,14 +1513,44 @@ async def jobs_new_submit(request: Request):
     })
 
 
+@app.get("/runs")
+async def runs_page(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("runs.html", {"request": request})
+
+
+@app.get("/models")
+async def models_page(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("models.html", {"request": request})
+
+
+@app.get("/datasets")
+async def datasets_page(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("datasets.html", {"request": request})
+
+
+@app.get("/settings/workspace")
+async def settings_workspace(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    await _jitter()
+    return JSONResponse({
+        "workspace": "neuro-prod",
+        "region": "us-east-1",
+        "tier": "enterprise",
+        "message": "Workspace configuration managed by your IT administrator. Raise a ticket: IT#6204.",
+    })
+
+
 @app.get("/settings/api-keys")
 async def api_keys_page(request: Request):
-    """
-    API key management — honeytoken lure.
-    Renders the api_keys template which displays fake per-user API keys.
-    Copy interactions are logged via the /api/v1/telemetry beacon.
-    Full canarytoken registration is a deferred item (MAJ-R9-1 class).
-    """
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
     await _jitter()
     return templates.TemplateResponse("api_keys.html", {"request": request})
 
@@ -1457,6 +1579,19 @@ async def api_keys_revoke(request: Request):
     """Honeytoken key revocation — accepts the request, logs via middleware, returns 200."""
     await _jitter()
     return JSONResponse({"ok": True, "revoked": True})
+
+
+@app.get("/api/v1/lure/model-manifest")
+async def lure_model_manifest(request: Request):
+    """Lure: planted model manifest — linked from /artifacts Download button."""
+    await _jitter()
+    return JSONResponse({
+        "model": "llama3-8b-finetune",
+        "version": "v1.2.3",
+        "s3_path": "s3://neuro-ml-artifacts/models/llama3-8b/",
+        "created_by": "priya.nair@neuro.ai",
+        "status": "production",
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1531,10 +1666,22 @@ async def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
 
 
+@app.get("/auth/logout")
+async def auth_logout(request: Request):
+    """Logout — clears session cookie and redirects to login."""
+    response = RedirectResponse(url="/", status_code=302)
+    response.delete_cookie("nro_session")
+    return response
+
+
+def _session_ok(request: Request) -> bool:
+    return bool(request.cookies.get("nro_session"))
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    """Dashboard — accessible without auth (the 'broken auth gate' misconfiguration)."""
-    # Jitter is deliberately absent here — cached page feeling, not API call
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
     jobs = FAKE_JOBS
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
@@ -1545,8 +1692,9 @@ async def dashboard(request: Request):
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
-    """Admin login — separate auth layer with break-glass comment."""
-    return templates.TemplateResponse("admin.html", {"request": request})
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("admin.html", {"request": request, "current_user": "m.chen@neuro.ai"})
 
 
 # ---------------------------------------------------------------------------
@@ -1589,12 +1737,9 @@ async def not_found_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=404,
         content={
-            "detail": "Not Found",
-            "path": request.url.path,
-            "debug_info": {
-                "registered_routes": 47,
-                "hint": "Did you mean /api/v1/runs? Check /api/docs for available endpoints.",
-            },
+            "error": "Not Found",
+            "request_id": f"req-{uuid.uuid4().hex[:12]}",
+            "status": 404,
         },
     )
 

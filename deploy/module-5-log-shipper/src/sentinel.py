@@ -67,6 +67,13 @@ def _suppressed(src_ip: str, category: str) -> bool:
 # ---------------------------------------------------------------------------
 _NOISE_EVENTS = {"http.get.health", "cowrie.session.closed", "api.startup", "cowrie.session.connect"}
 
+# Events that always alert — no cooldown suppression regardless of (IP, category)
+_NO_COOLDOWN_EVENTS = {
+    "http.lure.credential.success",
+    "cowrie.session.file_download",
+    "cowrie.login.success",
+}
+
 
 def _build_reason(event_type: str, row: dict, payload: dict) -> str:
     """Human-readable one-line summary for a Telegram alert message."""
@@ -79,6 +86,8 @@ def _build_reason(event_type: str, row: dict, payload: dict) -> str:
     url       = payload.get("url") or payload.get("outfile") or ""
     protocol  = payload.get("protocol") or ""
 
+    if event_type == "http.lure.credential.success":
+        return f"LURE CREDENTIAL USED — {username} / {password}"
     if event_type == "cowrie.login.success":
         return f"SSH login SUCCESS — user={username}"
     if event_type == "cowrie.login.failed":
@@ -190,6 +199,7 @@ def _esc(s) -> str:
 
 
 def _build_message(row: dict, reason: str) -> str:
+    event_type = row.get("event_type", "")
     src_ip  = row.get("src_ip") or "unknown"
     # Strip CIDR suffix that PostgreSQL inet::text appends (e.g. "1.2.3.4/32" → "1.2.3.4")
     if isinstance(src_ip, str) and "/" in src_ip:
@@ -209,8 +219,26 @@ def _build_message(row: dict, reason: str) -> str:
     username = row.get("username") or ""
     password = row.get("password") or ""
 
+    # Parse payload for bot_score
+    raw_payload = row.get("payload") or "{}"
+    try:
+        payload_data = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+    except Exception:
+        payload_data = {}
+    bot_score = payload_data.get("bot_score")
+
+    # Priority header — lure credential and file download get distinct headers
+    if event_type == "http.lure.credential.success":
+        header = "🚨🔑 <b>LURE CREDENTIAL USED</b>"
+    elif event_type == "cowrie.session.file_download":
+        header = "🚨📦 <b>MALWARE DOWNLOAD CAPTURED</b>"
+    elif event_type == "cowrie.login.success":
+        header = "🚨✅ <b>SSH LOGIN SUCCESS</b>"
+    else:
+        header = "🚨 <b>Honeypot Alert</b>"
+
     lines = [
-        "🚨 <b>Honeypot Alert</b>",
+        header,
         "",
         f"<b>Reason:</b> {_esc(reason)}",
         f"<b>Source IP:</b> <code>{_esc(src_ip)}</code>",
@@ -222,6 +250,14 @@ def _build_message(row: dict, reason: str) -> str:
         lines.append(f"<b>Username:</b> <code>{_esc(username[:80])}</code>")
     if password:
         lines.append(f"<b>Password:</b> <code>{_esc(password[:80])}</code>")
+    if bot_score is not None:
+        if bot_score < 0.3:
+            bot_label = "human-like ⚠️"
+        elif bot_score < 0.7:
+            bot_label = "mixed"
+        else:
+            bot_label = "automated"
+        lines.append(f"<b>Bot score:</b> {bot_score:.2f} ({bot_label})")
     return "\n".join(lines)
 
 
@@ -270,6 +306,87 @@ _QUERY = """
     ORDER BY created_at ASC
     LIMIT 500
 """
+
+
+# ---------------------------------------------------------------------------
+# Cross-sensor correlation checks
+# ---------------------------------------------------------------------------
+_CRED_REPLAY_SEEN: set = set()
+_KILLCHAIN_SEEN: set = set()
+
+
+def _check_credential_replay(conn) -> None:
+    """Alert when the same password appears on both the HTTP sensor and at least one other sensor."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT src_ip::text, password, array_agg(DISTINCT sensor) AS sensors
+                FROM honeypot_events
+                WHERE password IS NOT NULL
+                  AND created_at > NOW() - INTERVAL '24 hours'
+                GROUP BY src_ip, password
+                HAVING COUNT(DISTINCT sensor) > 1
+                  AND 'api' = ANY(array_agg(DISTINCT sensor))
+            """)
+            rows = cur.fetchall()
+        for src_ip, password, sensors in rows:
+            if src_ip is None:
+                continue
+            if isinstance(src_ip, str) and "/" in src_ip:
+                src_ip = src_ip.split("/")[0]
+            key = (src_ip, str(password)[:80])
+            if key in _CRED_REPLAY_SEEN:
+                continue
+            _CRED_REPLAY_SEEN.add(key)
+            if len(_CRED_REPLAY_SEEN) > 10000:
+                _CRED_REPLAY_SEEN.clear()
+            text = (
+                f"🔗 <b>CREDENTIAL REPLAY DETECTED</b>\n\n"
+                f"<b>IP:</b> <code>{_esc(src_ip)}</code>\n"
+                f"<b>Password:</b> <code>{_esc(str(password)[:80])}</code>\n"
+                f"<b>Sensors:</b> {_esc(', '.join(sensors))}\n"
+                f"<b>Action:</b> Attacker replayed HTTP credential on another sensor — kill chain confirmed"
+            )
+            _send(text)
+            log.info("cred_replay_alert src_ip=%s sensors=%s", src_ip, sensors)
+    except Exception as exc:
+        log.error("credential_replay_check error: %s", exc)
+
+
+def _check_multisensor_kill_chain(conn) -> None:
+    """Alert when one IP touches 3+ distinct sensors within 60 minutes."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT src_ip::text, array_agg(DISTINCT sensor) AS sensors,
+                       COUNT(*) AS event_count
+                FROM honeypot_events
+                WHERE created_at > NOW() - INTERVAL '60 minutes'
+                GROUP BY src_ip
+                HAVING COUNT(DISTINCT sensor) >= 3
+            """)
+            rows = cur.fetchall()
+        for src_ip, sensors, event_count in rows:
+            if src_ip is None:
+                continue
+            if isinstance(src_ip, str) and "/" in src_ip:
+                src_ip = src_ip.split("/")[0]
+            if src_ip in _KILLCHAIN_SEEN:
+                continue
+            _KILLCHAIN_SEEN.add(src_ip)
+            if len(_KILLCHAIN_SEEN) > 5000:
+                _KILLCHAIN_SEEN.clear()
+            text = (
+                f"⛓️ <b>KILL CHAIN TRAVERSAL</b>\n\n"
+                f"<b>IP:</b> <code>{_esc(src_ip)}</code>\n"
+                f"<b>Sensors hit:</b> {_esc(', '.join(sensors))}\n"
+                f"<b>Events (last 60m):</b> {event_count}\n"
+                f"<b>Action:</b> Attacker hit {len(sensors)} sensors in under 60 minutes"
+            )
+            _send(text)
+            log.info("killchain_alert src_ip=%s sensors=%s events=%d", src_ip, sensors, event_count)
+    except Exception as exc:
+        log.error("killchain_check error: %s", exc)
 
 
 def _connect_pg() -> psycopg2.extensions.connection:
@@ -333,6 +450,7 @@ def main() -> None:
     log.info("polling for events since %s", since.isoformat())
 
     _last_heartbeat = time.monotonic()
+    _loop_count = 0
 
     while True:
         try:
@@ -357,7 +475,9 @@ def main() -> None:
                 should, reason, category = _should_alert(row)
                 if should:
                     src_ip = row.get("src_ip") or ""
-                    if not _suppressed(src_ip, category):
+                    event_type = row.get("event_type", "")
+                    # No-cooldown events always fire regardless of suppression window
+                    if event_type in _NO_COOLDOWN_EVENTS or not _suppressed(src_ip, category):
                         send_alert(row, reason, category)
 
             # Trim dedup set — keep last 5000 IDs to bound memory
@@ -365,6 +485,12 @@ def main() -> None:
                 seen.clear()   # safe: worst case we re-alert one cooldown-window of events
 
             since = new_since
+
+            # Cross-sensor correlation checks every 5 polls (~50s)
+            _loop_count += 1
+            if _loop_count % 5 == 0:
+                _check_credential_replay(conn)
+                _check_multisensor_kill_chain(conn)
 
         except Exception as exc:
             log.error("poll loop error: %s", exc)

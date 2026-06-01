@@ -39,7 +39,7 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: 172.21.0.0/24   # fixed subnet from Section 7.1; must not overlap with honeypot-net (172.20.0.0/24) or egress-net (172.22.0.0/24)
+        - subnet: 10.10.21.0/24   # changed from 172.21.0.0/24 — all 172.20-22.0.0/16 ranges taken by existing VPS networks
 
 volumes:
   # Named volumes — Docker manages ownership under userns-remap automatically.

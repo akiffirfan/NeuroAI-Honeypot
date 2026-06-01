@@ -1091,6 +1091,20 @@ INSERT INTO honeypot_events (
 ;
 """
 
+UPSERT_SESSION_SQL = """
+INSERT INTO attacker_sessions (session_id, src_ip, first_seen, last_seen, event_count, sensors_hit)
+VALUES (%(session_id)s, %(src_ip)s, %(created_at)s, %(created_at)s, 1, ARRAY[%(sensor)s])
+ON CONFLICT (session_id) DO UPDATE
+    SET last_seen    = EXCLUDED.last_seen,
+        event_count  = attacker_sessions.event_count + 1,
+        sensors_hit  = CASE
+            WHEN EXCLUDED.sensors_hit[1] = ANY(attacker_sessions.sensors_hit)
+            THEN attacker_sessions.sensors_hit
+            ELSE array_append(attacker_sessions.sensors_hit, EXCLUDED.sensors_hit[1])
+        END
+;
+"""
+
 
 class PostgresWriter:
     def __init__(self, dsn: str):
@@ -1168,11 +1182,25 @@ class PostgresWriter:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(INSERT_SQL, row)
-            return True
         except Exception as exc:
             log.error("postgres_write_error", error=str(exc), event_type=eventid, src_ip=src_ip)
             self._conn = None  # force reconnect on next write
             return False
+
+        # Upsert attacker_sessions — best-effort, runs only after successful INSERT
+        if row.get("session_id") and row.get("src_ip"):
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(UPSERT_SESSION_SQL, {
+                        "session_id": row["session_id"],
+                        "src_ip":     row["src_ip"],
+                        "created_at": row["created_at"],
+                        "sensor":     row["sensor"],
+                    })
+            except Exception as exc:
+                log.warning("session_upsert_error", error=str(exc))
+
+        return True
 
 
 # ---------------------------------------------------------------------------

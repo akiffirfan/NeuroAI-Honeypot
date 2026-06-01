@@ -51,11 +51,10 @@ auth_class = UserDB
 
 # ──────────────────────────────────────────────────────────
 # STATE / DATA DIRECTORY
-# Absolute path so Cowrie writes tty/ and downloads/ into the named Docker volumes
-# (cowrie-tty and cowrie-dl) rather than the container's anonymous writable layer.
-# Without this, state_path defaults to var/lib/cowrie (relative to basedir inside
-# the container) which is NOT covered by any volume mount and is lost on restart.
-state_path = /cowrie/var/lib/cowrie
+# Do NOT set state_path here — the default (var/lib/cowrie relative to basedir
+# = /cowrie/cowrie-git/var/lib/cowrie) matches the cowrie-state volume mount.
+# Setting an absolute path breaks SSH host key generation on read_only: true containers
+# because Cowrie tries to create the parent dir, which is outside the volume (OSError: Read-only file system).
 
 # ──────────────────────────────────────────────────────────
 # KEYSTROKE / SESSION RECORDING
@@ -89,7 +88,7 @@ fake_command_nvidiastatus = true
 # Do NOT enable the textlog plugin — duplicate logging, unnecessary disk I/O.
 [output_jsonlog]
 enabled = true
-logfile = var/log/cowrie/cowrie.json
+logfile = /cowrie/var/log/cowrie/cowrie.json
 
 # ──────────────────────────────────────────────────────────
 # MOTD — shown after "successful" login (rare, only if bait credentials are configured)
