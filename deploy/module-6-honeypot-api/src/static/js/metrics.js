@@ -214,6 +214,34 @@
   });
 
   // ---------------------------------------------------------------------------
+  // DevTools detection
+  // ---------------------------------------------------------------------------
+  var _devToolsAlerted = false;
+  function _sendDevToolsBeacon(method) {
+    if (_devToolsAlerted) return;
+    _devToolsAlerted = true;
+    fetch('/api/v1/telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'dev_tools_open', method: method, ts: Date.now() }),
+      keepalive: true,
+    }).catch(function () {});
+    setTimeout(function () { _devToolsAlerted = false; }, 30000);
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'F12') { _sendDevToolsBeacon('F12'); }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'J' || e.key === 'C')) { _sendDevToolsBeacon('ctrl+shift+' + e.key.toLowerCase()); }
+    if (e.ctrlKey && e.key === 'u') { _sendDevToolsBeacon('ctrl+u'); }
+  });
+
+  setInterval(function () {
+    if (window.outerWidth - window.innerWidth > 160 || window.outerHeight - window.innerHeight > 160) {
+      _sendDevToolsBeacon('side_panel');
+    }
+  }, 2000);
+
+  // ---------------------------------------------------------------------------
   // Init
   // ---------------------------------------------------------------------------
   session.canvasHash = getCanvasMetrics();

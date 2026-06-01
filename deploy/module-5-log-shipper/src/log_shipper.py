@@ -1079,17 +1079,62 @@ INSERT INTO honeypot_events (
     geo_country, geo_country_code, geo_city, geo_lat, geo_lon,
     geo_asn, geo_org,
     username, password,
-    payload, raw_log, session_id
+    payload, raw_log, session_id,
+    threat_score, tags, is_tor
 ) VALUES (
     %(event_id)s, %(created_at)s, %(sensor)s, %(event_type)s,
     %(src_ip)s, %(src_port)s, %(dst_port)s,
     %(geo_country)s, %(geo_country_code)s, %(geo_city)s, %(geo_lat)s, %(geo_lon)s,
     %(geo_asn)s, %(geo_org)s,
     %(username)s, %(password)s,
-    %(payload)s, %(raw_log)s, %(session_id)s
+    %(payload)s, %(raw_log)s, %(session_id)s,
+    %(threat_score)s, %(tags)s, %(is_tor)s
 )
 ;
 """
+
+
+def _compute_threat_score(eventid: str, sensor_type: str) -> int:
+    if eventid == "cowrie.login.success":
+        return 90
+    if eventid == "cowrie.session.file_download":
+        return 85
+    if eventid in ("http.rce.attempt", "http.lfi.attempt"):
+        return 80
+    if eventid == "http.sqli.attempt":
+        return 75
+    if eventid == "http.lure.credential.success":
+        return 70
+    if sensor_type == "mariadb":
+        return 60
+    if "lure" in eventid or eventid in ("/.env", "/config.yaml"):
+        return 55
+    if eventid == "cowrie.login.failed":
+        return 40
+    if eventid.startswith("http."):
+        return 20
+    return 10
+
+
+def _compute_tags(eventid: str, sensor_type: str) -> list:
+    tags = set()
+    if eventid == "cowrie.session.file_download":
+        tags.add("malware-delivery")
+    if eventid == "cowrie.login.success":
+        tags.add("initial-access")
+    if eventid == "cowrie.login.failed":
+        tags.add("brute-force")
+    if "lfi" in eventid:
+        tags.update(["web-attack", "lfi"])
+    if "sqli" in eventid:
+        tags.update(["web-attack", "sqli"])
+    if "rce" in eventid:
+        tags.update(["web-attack", "rce"])
+    if eventid == "http.lure.credential.success":
+        tags.add("credential-theft")
+    if sensor_type == "mariadb":
+        tags.add("database-recon")
+    return list(tags)
 
 UPSERT_SESSION_SQL = """
 INSERT INTO attacker_sessions (session_id, src_ip, first_seen, last_seen, event_count, sensors_hit)
@@ -1178,6 +1223,9 @@ class PostgresWriter:
             "payload":         json.dumps(payload_fields) if payload_fields else None,
             "raw_log":         json.dumps(event.get("_raw", {})),
             "session_id":      event.get("session"),
+            "threat_score":    _compute_threat_score(eventid, sensor_type),
+            "tags":            _compute_tags(eventid, sensor_type),
+            "is_tor":          False,
         }
         try:
             with self._conn.cursor() as cur:
