@@ -1556,6 +1556,13 @@ async def settings_profile_page(request: Request):
     return templates.TemplateResponse("settings_profile.html", {"request": request})
 
 
+@app.get("/pipelines")
+async def pipelines_page(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return RedirectResponse(url="/dashboard?tab=pipelines", status_code=302)
+
+
 @app.get("/settings/workspace")
 async def settings_workspace(request: Request):
     if not _session_ok(request):
