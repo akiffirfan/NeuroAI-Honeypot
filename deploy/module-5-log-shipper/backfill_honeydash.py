@@ -40,8 +40,8 @@ POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 POSTGRES_DSN      = os.environ.get("POSTGRES_DSN") or f"postgresql://honeypot:{POSTGRES_PASSWORD}@postgres:5432/honeypot"
 HONEYDASH_URL     = os.environ.get("HONEYDASH_URL", "").rstrip("/")
 SENSOR_KEY        = os.environ.get("HONEYDASH_SENSOR_KEY", "")
-BATCH_SIZE        = 500
-SLEEP_BETWEEN     = 0.5   # seconds between batches — avoid overwhelming HoneyDash
+BATCH_SIZE        = 200
+SLEEP_BETWEEN     = 1.5   # seconds between batches — avoid overwhelming HoneyDash
 
 if not HONEYDASH_URL:
     sys.exit("ERROR: HONEYDASH_URL not set")
@@ -151,18 +151,20 @@ def row_to_cowrie(row) -> dict | None:
     return event
 
 
-def send_batch(events: list) -> tuple[int, int]:
-    try:
-        r = requests.post(INGEST_URL, json=events, headers=HEADERS, timeout=30)
-        if r.status_code == 202:
-            result = r.json()
-            return result.get("accepted", 0), result.get("errors", 0)
-        else:
-            print(f"  [warn] HTTP {r.status_code}: {r.text[:200]}")
-            return 0, len(events)
-    except Exception as e:
-        print(f"  [warn] request failed: {e}")
-        return 0, len(events)
+def send_batch(events: list, retries: int = 3) -> tuple[int, int]:
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.post(INGEST_URL, json=events, headers=HEADERS, timeout=60)
+            if r.status_code == 202:
+                result = r.json()
+                return result.get("accepted", 0), result.get("errors", 0)
+            else:
+                print(f"  [warn] HTTP {r.status_code} (attempt {attempt}/{retries}): {r.text[:200]}")
+        except Exception as e:
+            print(f"  [warn] request failed (attempt {attempt}/{retries}): {e}")
+        if attempt < retries:
+            time.sleep(5 * attempt)  # 5s, 10s backoff
+    return 0, len(events)
 
 
 def main():

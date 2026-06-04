@@ -48,7 +48,7 @@
       <form onsubmit="doAdminLogin(event)" autocomplete="on">
         <div style="margin-bottom:16px;">
           <label for="admin-username" style="display:block;font-size:12px;font-weight:500;color:var(--c-muted);margin-bottom:6px;">Username</label>
-          <input id="admin-username" type="text" name="username" autocomplete="username" placeholder="admin" class="field">
+          <input id="admin-username" type="text" name="username" autocomplete="username" value="{{ current_user }}" placeholder="admin" class="field" style="{% if current_user %}color:var(--c-muted);cursor:default;{% endif %}" {% if current_user %}readonly{% endif %}>
         </div>
         <div style="margin-bottom:20px;">
           <label for="admin-password" style="display:block;font-size:12px;font-weight:500;color:var(--c-muted);margin-bottom:6px;">Password</label>

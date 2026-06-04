@@ -77,7 +77,7 @@
           <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;margin-top:1px;">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
           </svg>
-          <span>Account temporarily locked. Contact <span class="mono" style="color:#FEF08A;">#ai-infra</span> on Slack.</span>
+          <span id="login-lockout-text">Account temporarily locked. Contact <span class="mono" style="color:#FEF08A;">#ai-infra</span> on Slack or reset via SSO.</span>
         </div>
 
         <button id="login-btn" type="submit" class="btn-gradient" style="width:100%;padding:11px;font-size:14px;font-weight:600;">
@@ -164,6 +164,21 @@
 {% block scripts %}
 <script>
   let failCount = 0;
+  const _pageLoadTs = Date.now();
+  let _firstFocusTs = null;
+  (function() {
+    const emailField = document.getElementById('local-email');
+    if (emailField) {
+      emailField.addEventListener('focus', function() {
+        if (_firstFocusTs !== null) return;
+        _firstFocusTs = Date.now();
+        const dwellMs = _firstFocusTs - _pageLoadTs;
+        fetch('/api/v1/telemetry', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({type:'field_interaction', field:'email', page:'login', dwell_ms: dwellMs, ts: _firstFocusTs})
+        }).catch(function(){});
+      }, {once: true});
+    }
+  })();
 
   function togglePw() {
     const f = document.getElementById('local-password');
@@ -255,6 +270,10 @@
     btnText.textContent = 'Login'; btn.disabled = false;
     failCount++;
     if (failCount >= 3) {
+      const lockText = document.getElementById('login-lockout-text');
+      if (lockText && email) {
+        lockText.innerHTML = 'Account <span class="mono" style="color:#FEF08A;">' + email + '</span> temporarily locked — too many attempts. Reset via SSO.';
+      }
       lockEl.classList.remove('hidden'); lockEl.style.display='flex';
     } else {
       errText.textContent = 'Invalid email or password.';

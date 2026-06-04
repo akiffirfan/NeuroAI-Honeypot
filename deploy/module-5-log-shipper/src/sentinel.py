@@ -65,13 +65,18 @@ def _suppressed(src_ip: str, category: str) -> bool:
 #
 # Everything else fires — cooldown per (src_ip, event_type) prevents floods.
 # ---------------------------------------------------------------------------
-_NOISE_EVENTS = {"http.get.health", "cowrie.session.closed", "api.startup", "cowrie.session.connect"}
+_NOISE_EVENTS = {"http.get.health", "cowrie.session.closed", "api.startup",
+                 "cowrie.session.connect", "smtp.session.connect", "smtp.ehlo"}
 
 # Events that always alert — no cooldown suppression regardless of (IP, category)
 _NO_COOLDOWN_EVENTS = {
     "http.lure.credential.success",
     "cowrie.session.file_download",
     "cowrie.login.success",
+    "http.upload.malware_received",      # attacker uploaded a file — always alert
+    "http.lure.data_exfil",             # attacker downloaded a lure file — always alert
+    "http.canarytoken.fired",           # out-of-band canarytoken hit — always alert
+    "cross_sensor.credential_relay",    # SSH config.yaml read → MariaDB connect — always alert
 }
 
 
@@ -86,6 +91,34 @@ def _build_reason(event_type: str, row: dict, payload: dict) -> str:
     url       = payload.get("url") or payload.get("outfile") or ""
     protocol  = payload.get("protocol") or ""
 
+    filename  = payload.get("filename") or payload.get("saved_as") or ""
+    size      = payload.get("size_bytes") or ""
+    mime      = payload.get("mime_type") or ""
+    real_ip   = payload.get("real_ip") or payload.get("canarytoken_src_ip") or payload.get("src_ip") or (row.get("src_ip") or "").split("/")[0]
+    ssrf_url  = payload.get("webhook_url") or payload.get("source_url") or ""
+    passwords = payload.get("last_passwords_tried") or []
+
+    if event_type == "http.upload.malware_received":
+        size_str = f"{size} bytes" if size else "unknown size"
+        return f"UPLOAD CAPTURED: {filename or '(unnamed)'} — {size_str}, {mime or 'unknown type'}"
+    if event_type == "http.lure.data_exfil":
+        dl_file = payload.get("path") or payload.get("file") or path or "(unknown)"
+        return f"LURE FILE DOWNLOADED: {dl_file}"
+    if event_type == "http.canarytoken.fired":
+        return f"CANARYTOKEN FIRED — real attacker IP: {real_ip or '(not captured)'}"
+    if event_type == "http.snare.ssrf_attempt":
+        return f"SSRF Attempt — target URL: {ssrf_url[:100] or path}"
+    if event_type == "http.prompt.injection":
+        pattern = payload.get("pattern") or ""
+        preview = payload.get("body_preview") or ""
+        return f"Prompt injection — pattern: '{pattern}' — body: {preview[:100]}"
+    if event_type == "cross_sensor.credential_relay":
+        prior = payload.get("prior_ssh_cmd") or ""
+        user  = payload.get("mariadb_user") or username or ""
+        return f"CREDENTIAL RELAY: SSH read config.yaml → MariaDB connect as '{user}' — prior cmd: {prior[:80]}"
+    if event_type == "http.bruteforce.detected":
+        pw_list = ", ".join(str(p) for p in passwords[-5:]) if passwords else "unknown"
+        return f"Bruteforce detected — last passwords: [{pw_list}]"
     if event_type == "http.lure.credential.success":
         return f"LURE CREDENTIAL USED — {username} / {password}"
     if event_type == "cowrie.login.success":
@@ -124,6 +157,20 @@ def _build_reason(event_type: str, row: dict, payload: dict) -> str:
     if event_type.startswith("http."):
         creds = f" (user={username})" if username else ""
         return f"Web probe: {method} {path}{creds}"
+    if event_type == "smtp.data.received":
+        mail_from = payload.get("mail_from") or username or ""
+        rcpts = payload.get("rcpt_to") or []
+        rcpt_str = ", ".join(rcpts) if isinstance(rcpts, list) else str(rcpts)
+        preview = payload.get("body_preview") or ""
+        return f"SMTP DATA — from={mail_from} to={rcpt_str[:80]} body={preview[:80]}"
+    if event_type == "smtp.auth.attempt":
+        mechanism = payload.get("mechanism") or ""
+        return f"SMTP AUTH attempt — mechanism={mechanism}"
+    if event_type == "smtp.vrfy":
+        user = payload.get("user") or username or ""
+        return f"SMTP VRFY/EXPN enumeration — user={user}"
+    if event_type.startswith("smtp."):
+        return f"SMTP: {event_type} from {(row.get('src_ip') or '').split('/')[0]}"
     # Fallback — show raw event_type so nothing is ever blank
     return event_type
 
@@ -168,16 +215,19 @@ def _should_alert(row: dict) -> tuple:
     #   subsequent Telnet alert from the same IP.
     # Everything else: use event_type as-is.
     _SNARE_CATEGORIES = {
-        "http.sqli.attempt":      "web.sqli",
-        "http.post.sqli.attempt": "web.sqli",
-        "http.lfi.attempt":       "web.lfi",
-        "http.get.lfi.attempt":   "web.lfi",
-        "http.rce.attempt":       "web.rce",
-        "http.post.rce.attempt":  "web.rce",
-        "http.cmdi.attempt":      "web.rce",
-        "http.ssrf.attempt":      "web.ssrf",
-        "http.xss.attempt":       "web.xss",
-        "http.get.xss.attempt":   "web.xss",
+        "http.sqli.attempt":          "web.sqli",
+        "http.post.sqli.attempt":     "web.sqli",
+        "http.lfi.attempt":           "web.lfi",
+        "http.get.lfi.attempt":       "web.lfi",
+        "http.rce.attempt":           "web.rce",
+        "http.post.rce.attempt":      "web.rce",
+        "http.cmdi.attempt":          "web.rce",
+        "http.ssrf.attempt":          "web.ssrf",
+        "http.snare.ssrf_attempt":    "web.ssrf",   # remote-import + webhook SSRF trap
+        "http.xss.attempt":           "web.xss",
+        "http.get.xss.attempt":       "web.xss",
+        "http.bruteforce.detected":   "web.bruteforce",
+        "http.prompt.injection":      "web.prompt_injection",
     }
     if event_type in _SNARE_CATEGORIES:
         cooldown_category = _SNARE_CATEGORIES[event_type]
@@ -227,9 +277,23 @@ def _build_message(row: dict, reason: str) -> str:
         payload_data = {}
     bot_score = payload_data.get("bot_score")
 
-    # Priority header — lure credential and file download get distinct headers
+    # Priority header — each high-value event type gets a distinct Telegram header
     if event_type == "http.lure.credential.success":
         header = "🚨🔑 <b>LURE CREDENTIAL USED</b>"
+    elif event_type == "http.upload.malware_received":
+        header = "🚨🦠 <b>MALWARE UPLOAD CAPTURED</b>"
+    elif event_type == "http.lure.data_exfil":
+        header = "🚨📤 <b>LURE FILE DOWNLOADED</b>"
+    elif event_type == "http.canarytoken.fired":
+        header = "🚨🎯 <b>CANARYTOKEN FIRED — POST-EXFIL</b>"
+    elif event_type == "http.prompt.injection":
+        header = "🤖 <b>PROMPT INJECTION ATTEMPT</b>"
+    elif event_type == "cross_sensor.credential_relay":
+        header = "🔗🔑 <b>CREDENTIAL RELAY: SSH → MARIADB</b>"
+    elif event_type == "smtp.data.received":
+        header = "📧 <b>SMTP DATA CAPTURED</b>"
+    elif event_type == "smtp.auth.attempt":
+        header = "📧🔑 <b>SMTP AUTH ATTEMPT</b>"
     elif event_type == "cowrie.session.file_download":
         header = "🚨📦 <b>MALWARE DOWNLOAD CAPTURED</b>"
     elif event_type == "cowrie.login.success":
@@ -258,6 +322,8 @@ def _build_message(row: dict, reason: str) -> str:
         else:
             bot_label = "automated"
         lines.append(f"<b>Bot score:</b> {bot_score:.2f} ({bot_label})")
+    if row.get("is_tor"):
+        lines.append("<b>TOR exit node</b> 🧅")
     return "\n".join(lines)
 
 
@@ -294,13 +360,13 @@ def send_alert(row: dict, reason: str, category: str) -> None:
 _COLS = [
     "event_id", "event_type", "src_ip", "dst_port",
     "username", "password", "payload", "sensor", "created_at",
-    "geo_country", "geo_city", "geo_org",
+    "geo_country", "geo_city", "geo_org", "is_tor",
 ]
 
 _QUERY = """
     SELECT event_id::text, event_type, src_ip::text, dst_port,
            username, password, payload::text, sensor, created_at,
-           geo_country, geo_city, geo_org
+           geo_country, geo_city, geo_org, is_tor
     FROM honeypot_events
     WHERE created_at > %s
     ORDER BY created_at ASC
@@ -313,6 +379,7 @@ _QUERY = """
 # ---------------------------------------------------------------------------
 _CRED_REPLAY_SEEN: set = set()
 _KILLCHAIN_SEEN: set = set()
+_KILLCHAIN_STAGE_SEEN: set = set()   # (session_id, stage) pairs already alerted
 
 
 def _check_credential_replay(conn) -> None:
@@ -387,6 +454,45 @@ def _check_multisensor_kill_chain(conn) -> None:
             log.info("killchain_alert src_ip=%s sensors=%s events=%d", src_ip, sensors, event_count)
     except Exception as exc:
         log.error("killchain_check error: %s", exc)
+
+
+def _check_kill_chain_stages(conn) -> None:
+    """Alert when any session reaches EXECUTION or EXFILTRATION stage."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT session_id, src_ip::text, kill_chain_stage,
+                       sensors_hit, event_count, last_seen
+                FROM attacker_sessions
+                WHERE kill_chain_stage IN ('EXECUTION', 'EXFILTRATION')
+                  AND last_seen > NOW() - INTERVAL '10 minutes'
+            """)
+            rows = cur.fetchall()
+        for session_id, src_ip, stage, sensors_hit, event_count, last_seen in rows:
+            if src_ip and "/" in src_ip:
+                src_ip = src_ip.split("/")[0]
+            key = (session_id, stage)
+            if key in _KILLCHAIN_STAGE_SEEN:
+                continue
+            _KILLCHAIN_STAGE_SEEN.add(key)
+            if len(_KILLCHAIN_STAGE_SEEN) > 5000:
+                _KILLCHAIN_STAGE_SEEN.clear()
+            emoji = "💀" if stage == "EXFILTRATION" else "⚡"
+            sensors_str = ", ".join(sensors_hit) if sensors_hit else "unknown"
+            ts_str = str(last_seen)[:19] if last_seen else "unknown"
+            text = (
+                f"{emoji} <b>KILL CHAIN: {stage}</b>\n\n"
+                f"<b>IP:</b> <code>{_esc(src_ip or 'unknown')}</code>\n"
+                f"<b>Stage reached:</b> {_esc(stage)}\n"
+                f"<b>Sensors hit:</b> {_esc(sensors_str)}\n"
+                f"<b>Events:</b> {event_count}\n"
+                f"<b>Last seen:</b> {_esc(ts_str)} UTC"
+            )
+            _send(text)
+            log.info("kill_chain_stage_alert src_ip=%s session_id=%s stage=%s",
+                     src_ip, session_id, stage)
+    except Exception as exc:
+        log.error("kill_chain_stage_check error: %s", exc)
 
 
 def _connect_pg() -> psycopg2.extensions.connection:
@@ -491,6 +597,7 @@ def main() -> None:
             if _loop_count % 5 == 0:
                 _check_credential_replay(conn)
                 _check_multisensor_kill_chain(conn)
+                _check_kill_chain_stages(conn)
 
         except Exception as exc:
             log.error("poll loop error: %s", exc)

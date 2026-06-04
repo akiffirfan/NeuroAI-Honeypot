@@ -191,28 +191,40 @@ async def startup():
     logger.info("jupyter_stub_ready", port=8888)
 
 
+_JUPYTER_DEV_TOKEN = "nro-dev-token-8f3a2b1c4d5e"
+
+
 @app.middleware("http")
 async def jupyter_request_logger(request: Request, call_next):
     response = await call_next(request)
-    response.headers["X-Powered-By"] = "FastAPI/0.104.1"
-    response.headers["X-Debug-Mode"] = "enabled"
     response.headers["Server"] = "Jupyter Server 2.14.0"
     return response
 
 
+def _make_xsrf_token() -> str:
+    """Generate a random _xsrf token matching real Jupyter's format."""
+    return uuid.uuid4().hex[:32]
+
+
 @app.get("/", response_class=HTMLResponse)
 async def jupyter_index(request: Request):
-    """Fake Jupyter Lab login page."""
+    """Fake Jupyter Lab login page — sets _xsrf cookie like real Jupyter."""
     event = _build_event(request, "index")
     asyncio.create_task(asyncio.to_thread(_log_event, event))
-    return HTMLResponse(content=_jupyter_login_html())
+    xsrf = _make_xsrf_token()
+    resp = HTMLResponse(content=_jupyter_login_html(xsrf))
+    resp.set_cookie("_xsrf", xsrf, path="/jupyter/", samesite="strict", httponly=False)
+    return resp
 
 
 @app.get("/login", response_class=HTMLResponse)
 async def jupyter_login_page(request: Request):
     event = _build_event(request, "login_page")
     asyncio.create_task(asyncio.to_thread(_log_event, event))
-    return HTMLResponse(content=_jupyter_login_html())
+    xsrf = _make_xsrf_token()
+    resp = HTMLResponse(content=_jupyter_login_html(xsrf))
+    resp.set_cookie("_xsrf", xsrf, path="/jupyter/", samesite="strict", httponly=False)
+    return resp
 
 
 @app.post("/login")
@@ -220,20 +232,50 @@ async def jupyter_login_post(request: Request):
     body_bytes = await request.body()
     body_preview = body_bytes[:512].decode("utf-8", errors="replace")
     event = _build_event(request, "login_attempt", body_preview)
-    # Try to extract password
+    passwd = None
+    xsrf_form = None
     try:
         from urllib.parse import parse_qs
         parsed = parse_qs(body_bytes.decode("utf-8", errors="replace"))
         passwd = parsed.get("password", [""])[0]
+        xsrf_form = parsed.get("_xsrf", [""])[0]
         event["password"] = passwd[:256] if passwd else None
     except Exception:
         pass
     asyncio.create_task(asyncio.to_thread(_log_event, event))
-    # Always fail auth — redirect back to login
+
+    # Real Jupyter requires _xsrf cookie == _xsrf form field (CSRF check)
+    xsrf_cookie = request.cookies.get("_xsrf", "")
+    if xsrf_form and xsrf_cookie and xsrf_form != xsrf_cookie:
+        # CSRF mismatch — return 403 exactly as real Jupyter does
+        return Response(status_code=403, content=b"'_xsrf' argument missing from POST")
+
+    # Dev token discovered in the HTML source — let the attacker in
+    if passwd and passwd.strip() == _JUPYTER_DEV_TOKEN:
+        # Cookie name matches the actual served host/port seen by the client
+        # (nginx proxies /jupyter/ so the external origin is what matters)
+        host = request.headers.get("host", "localhost").split(":")[0]
+        cookie_name = f"username-{host}-8888"
+        resp = Response(status_code=302, headers={"location": "/jupyter/tree"})
+        resp.set_cookie(
+            cookie_name,
+            f"2|1:0|10:{int(time.time())}|{len(cookie_name)}:{cookie_name}|44:bm9yby1kZXYtdG9rZW4tOGYzYTJiMWM0ZDVl|{uuid.uuid4().hex[:40]}",
+            httponly=True,
+        )
+        return resp
+    # Wrong token — redirect back to login
     return Response(
         status_code=302,
-        headers={"location": "/login?next=/"},
+        headers={"location": "/jupyter/login?next=/jupyter/"},
     )
+
+
+@app.get("/tree", response_class=HTMLResponse)
+@app.get("/tree/{path:path}", response_class=HTMLResponse)
+async def jupyter_tree(request: Request, path: str = ""):
+    event = _build_event(request, "tree.view")
+    asyncio.create_task(asyncio.to_thread(_log_event, event))
+    return HTMLResponse(content=_jupyter_tree_html())
 
 
 @app.get("/api/kernels")
@@ -382,8 +424,58 @@ async def kernel_channels(websocket: WebSocket, kernel_id: str):
         pass
 
 
-def _jupyter_login_html() -> str:
-    return """<!DOCTYPE html>
+def _jupyter_tree_html() -> str:
+    notebooks = "".join(
+        f'<tr><td><span class="item-icon">📓</span> <a href="/jupyter/notebooks/{nb["path"]}">{nb["name"]}</a></td>'
+        f'<td style="color:#888;font-size:0.82rem">{nb["last_modified"][:10]}</td>'
+        f'<td style="color:#888;font-size:0.82rem">{nb["size"] // 1024} KB</td></tr>'
+        for nb in FAKE_NOTEBOOKS
+    )
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Jupyter — work</title>
+  <style>
+    body {{ background:#0f1117; color:#e0e0e0; font-family:-apple-system,sans-serif; margin:0; }}
+    .topbar {{ background:#1a1d27; border-bottom:1px solid #2d3148; padding:10px 24px; display:flex; align-items:center; gap:16px; }}
+    .topbar .brand {{ font-size:1rem; font-weight:600; }}
+    .topbar .path {{ color:#8b8fa8; font-size:0.85rem; }}
+    .topbar .logout {{ margin-left:auto; color:#8b8fa8; font-size:0.82rem; text-decoration:none; }}
+    .container {{ max-width:900px; margin:40px auto; padding:0 24px; }}
+    h2 {{ font-size:1.1rem; font-weight:500; margin-bottom:16px; }}
+    table {{ width:100%; border-collapse:collapse; }}
+    th {{ text-align:left; color:#8b8fa8; font-size:0.78rem; font-weight:400; border-bottom:1px solid #2d3148; padding:6px 8px; }}
+    td {{ padding:8px; border-bottom:1px solid #1e2030; font-size:0.9rem; }}
+    tr:hover td {{ background:#1a1d27; }}
+    .item-icon {{ margin-right:6px; }}
+    a {{ color:#a5b4fc; text-decoration:none; }}
+    a:hover {{ text-decoration:underline; }}
+    .new-btn {{ background:#6366f1; color:#fff; border:none; border-radius:5px; padding:7px 16px; font-size:0.85rem; cursor:pointer; }}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">Jupyter</span>
+    <span class="path">/ work</span>
+    <a class="logout" href="/jupyter/logout">Logout</a>
+  </div>
+  <div class="container">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h2>work /</h2>
+      <button class="new-btn">New ▾</button>
+    </div>
+    <table>
+      <thead><tr><th>Name</th><th>Last Modified</th><th>File Size</th></tr></thead>
+      <tbody>{notebooks}</tbody>
+    </table>
+  </div>
+</body>
+</html>"""
+
+
+def _jupyter_login_html(xsrf_token: str = "") -> str:
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -392,27 +484,22 @@ def _jupyter_login_html() -> str:
   <title>Neuro JupyterLab — Internal</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <style>
-    body { background: #0f1117; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-    .card { background: #1a1d27; border: 1px solid #2d3148; border-radius: 12px; padding: 40px 48px; width: 380px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
-    .logo { text-align: center; margin-bottom: 28px; }
-    .logo svg { width: 40px; height: 40px; }
-    h1 { font-size: 1.4rem; font-weight: 600; margin: 0 0 4px 0; text-align: center; }
-    .sub { color: #8b8fa8; font-size: 0.85rem; text-align: center; margin-bottom: 28px; }
-    label { display: block; font-size: 0.8rem; color: #8b8fa8; margin-bottom: 6px; }
-    input { width: 100%; box-sizing: border-box; background: #0f1117; border: 1px solid #2d3148; border-radius: 6px; padding: 10px 12px; color: #e0e0e0; font-size: 0.95rem; margin-bottom: 16px; }
-    input:focus { outline: none; border-color: #6366f1; }
-    button { width: 100%; background: #6366f1; color: #fff; border: none; border-radius: 6px; padding: 11px; font-size: 1rem; font-weight: 500; cursor: pointer; margin-top: 4px; }
-    button:hover { background: #4f52d4; }
-    .footer { margin-top: 24px; font-size: 0.75rem; color: #555; text-align: center; }
+    body {{ background: #0f1117; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
+    .card {{ background: #1a1d27; border: 1px solid #2d3148; border-radius: 12px; padding: 40px 48px; width: 380px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }}
+    .logo {{ text-align: center; margin-bottom: 28px; }}
+    .logo svg {{ width: 40px; height: 40px; }}
+    h1 {{ font-size: 1.4rem; font-weight: 600; margin: 0 0 4px 0; text-align: center; }}
+    .sub {{ color: #8b8fa8; font-size: 0.85rem; text-align: center; margin-bottom: 28px; }}
+    label {{ display: block; font-size: 0.8rem; color: #8b8fa8; margin-bottom: 6px; }}
+    input {{ width: 100%; box-sizing: border-box; background: #0f1117; border: 1px solid #2d3148; border-radius: 6px; padding: 10px 12px; color: #e0e0e0; font-size: 0.95rem; margin-bottom: 16px; }}
+    input:focus {{ outline: none; border-color: #6366f1; }}
+    button {{ width: 100%; background: #6366f1; color: #fff; border: none; border-radius: 6px; padding: 11px; font-size: 1rem; font-weight: 500; cursor: pointer; margin-top: 4px; }}
+    button:hover {{ background: #4f52d4; }}
+    .footer {{ margin-top: 24px; font-size: 0.75rem; color: #555; text-align: center; }}
   </style>
 </head>
 <body>
-  <!--
-    Neuro JupyterLab — Neuro AI Infrastructure (Internal Only)
-    Version: 2.14.0 | Build: 20260428
-    TODO: disable token auth, switch to SSO before next release (m.chen @ 2026-04-28)
-    Default token for dev: nro-dev-token-8f3a2b1c4d5e (CHANGE BEFORE PROD — IT#4821)
-  -->
+  <!-- TODO: disable token auth before prod deploy — m.chen -->
   <div class="card">
     <div class="logo">
       <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -430,8 +517,10 @@ def _jupyter_login_html() -> str:
     </div>
     <h1>Neuro JupyterLab</h1>
     <p class="sub">Neuro AI Infrastructure — Internal Use Only</p>
-    <form method="POST" action="/login">
+    <form method="POST" action="/jupyter/login">
+      <input type="hidden" name="_xsrf" value="{xsrf_token}">
       <label>Password / Token</label>
+      <!-- dev: nro-dev-token-8f3a2b1c4d5e -->
       <input type="password" name="password" placeholder="Enter server token" autocomplete="current-password">
       <button type="submit">Sign In</button>
     </form>

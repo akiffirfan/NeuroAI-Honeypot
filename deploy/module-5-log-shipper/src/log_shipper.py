@@ -117,6 +117,44 @@ _honeydash_lock  = threading.Lock()
 _city_reader: Optional[geoip2.database.Reader] = None
 _asn_reader:  Optional[geoip2.database.Reader] = None
 
+# ---------------------------------------------------------------------------
+# TOR exit node list — refreshed daily
+# ---------------------------------------------------------------------------
+_TOR_EXIT_IPS: set = set()
+_TOR_LOCK = threading.Lock()
+_TOR_LIST_URL = "https://check.torproject.org/torbulkexitlist"
+
+
+def _refresh_tor_list() -> None:
+    """Download the TOR bulk exit list and update the in-memory set."""
+    global _TOR_EXIT_IPS
+    try:
+        resp = requests.get(_TOR_LIST_URL, timeout=20)
+        if resp.status_code == 200:
+            ips = {line.strip() for line in resp.text.splitlines()
+                   if line.strip() and not line.startswith("#")}
+            with _TOR_LOCK:
+                _TOR_EXIT_IPS = ips
+            log.info("tor_list_refreshed", count=len(ips))
+        else:
+            log.warning("tor_list_fetch_failed", status=resp.status_code)
+    except Exception as exc:
+        log.warning("tor_list_fetch_error", error=str(exc))
+
+
+def _tor_refresh_thread() -> None:
+    """Refresh TOR list at startup then every 6 hours."""
+    _refresh_tor_list()
+    while True:
+        time.sleep(6 * 3600)
+        _refresh_tor_list()
+
+
+def _is_tor(ip: str) -> bool:
+    clean = ip.split("/")[0] if ip and "/" in ip else (ip or "")
+    with _TOR_LOCK:
+        return clean in _TOR_EXIT_IPS
+
 def _init_geoip() -> None:
     global _city_reader, _asn_reader
     for db_path, name in [(GEOIP_DB, "City"), (GEOIP_ASN_DB, "ASN")]:
@@ -1150,6 +1188,90 @@ ON CONFLICT (session_id) DO UPDATE
 ;
 """
 
+# Kill chain stage ordering — higher number = more advanced stage (never regress)
+_KILL_CHAIN_ORDER = {
+    "RECON":             1,
+    "INITIAL_ACCESS":    2,
+    "DISCOVERY":         3,
+    "CREDENTIAL_ACCESS": 4,
+    "EXECUTION":         5,
+    "EXFILTRATION":      6,
+}
+
+# Advance kill_chain_stage only when the new stage is strictly higher than current
+ADVANCE_KILL_CHAIN_SQL = """
+UPDATE attacker_sessions
+SET kill_chain_stage = %(stage)s
+WHERE session_id = %(session_id)s
+  AND (
+    kill_chain_stage IS NULL
+    OR CASE kill_chain_stage
+         WHEN 'RECON'             THEN 1
+         WHEN 'INITIAL_ACCESS'    THEN 2
+         WHEN 'DISCOVERY'         THEN 3
+         WHEN 'CREDENTIAL_ACCESS' THEN 4
+         WHEN 'EXECUTION'         THEN 5
+         WHEN 'EXFILTRATION'      THEN 6
+         ELSE 0
+       END < %(stage_order)s
+  )
+"""
+
+
+def _classify_kill_chain_stage(eventid: str, payload: dict) -> str | None:
+    """Map a single sensor event to a kill chain stage. Returns None if unclassifiable.
+
+    Checked in descending priority so the highest applicable stage wins.
+    payload keys: input (command/SQL), http_input ("HTTP GET /path"), url, etc.
+    """
+    cmd       = (payload.get("input") or "").lower()
+    http_hint = (payload.get("http_input") or "").lower()   # "http get /some/path"
+    # extract just the path portion from "HTTP METHOD /path"
+    hint_parts = http_hint.split()
+    path = hint_parts[-1] if len(hint_parts) >= 3 else ""
+
+    # EXFILTRATION — data is leaving the environment
+    if eventid == "cowrie.session.file_download":
+        return "EXFILTRATION"
+    if eventid == "cowrie.command.input" and re.search(r'\bwget\b|\bcurl\b', cmd):
+        return "EXFILTRATION"
+
+    # EXECUTION — attacker executes code or plants a payload
+    if eventid == "cowrie.command.input" and re.search(
+        r'python3?\s+-c|perl\s+-e|bash\s+-i|nc\s+-e|ncat\s+-e|chmod\s+\+x|\./',
+        cmd,
+    ):
+        return "EXECUTION"
+
+    # CREDENTIAL_ACCESS — reading stored secrets
+    if eventid == "cowrie.command.input" and re.search(
+        r'\.env|config\.yaml|\.bash_history|\.aws|authorized_keys|id_rsa|id_ed25519',
+        cmd,
+    ):
+        return "CREDENTIAL_ACCESS"
+    if any(p in path for p in ("/.env", "/config.yaml", "/api/v1/internal",
+                                "/api/v1/lure", "/.git/config")):
+        return "CREDENTIAL_ACCESS"
+
+    # DISCOVERY — enumeration of the system
+    if eventid == "cowrie.command.input" and re.search(
+        r'\bid\b|\bwhoami\b|\buname\b|\bls\s|\bps\s|\bifconfig|\bip\s+a|\bnetstat\b|\bhostname\b|\bcat\s+/etc',
+        cmd,
+    ):
+        return "DISCOVERY"
+    if any(p in path for p in ("/admin", "/api/v1/cluster", "/api/v1/internal")):
+        return "DISCOVERY"
+
+    # INITIAL_ACCESS — authentication / credential attempts
+    if eventid in ("cowrie.login.failed", "cowrie.login.success"):
+        return "INITIAL_ACCESS"
+
+    # RECON — any initial probe
+    if eventid == "cowrie.session.connect" or eventid.startswith("http."):
+        return "RECON"
+
+    return None
+
 
 class PostgresWriter:
     def __init__(self, dsn: str):
@@ -1225,7 +1347,7 @@ class PostgresWriter:
             "session_id":      event.get("session"),
             "threat_score":    _compute_threat_score(eventid, sensor_type),
             "tags":            _compute_tags(eventid, sensor_type),
-            "is_tor":          False,
+            "is_tor":          _is_tor(src_ip),
         }
         try:
             with self._conn.cursor() as cur:
@@ -1247,6 +1369,25 @@ class PostgresWriter:
                     })
             except Exception as exc:
                 log.warning("session_upsert_error", error=str(exc))
+
+            # Advance kill chain stage — only if this event maps to a stage
+            stage = _classify_kill_chain_stage(eventid, payload_fields)
+            if stage:
+                try:
+                    with self._conn.cursor() as cur:
+                        cur.execute(ADVANCE_KILL_CHAIN_SQL, {
+                            "stage":       stage,
+                            "stage_order": _KILL_CHAIN_ORDER[stage],
+                            "session_id":  row["session_id"],
+                        })
+                        if cur.rowcount > 0:
+                            log.info("kill_chain_advanced",
+                                     session_id=row["session_id"],
+                                     src_ip=src_ip,
+                                     stage=stage,
+                                     eventid=eventid)
+                except Exception as exc:
+                    log.warning("kill_chain_update_error", error=str(exc))
 
         return True
 
@@ -1446,6 +1587,63 @@ def _add_to_honeydash_batch(event: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# P3-10: MariaDB credential relay detection
+# ---------------------------------------------------------------------------
+# When an attacker SSH's into Cowrie, cats config.yaml to get the DB password,
+# then connects to MariaDB — those two events are unlinked by default.
+# This check bridges them into a single cross_sensor.credential_relay event.
+
+def _check_mariadb_credential_relay(pg: PostgresWriter, event: dict) -> None:
+    """Emit cross_sensor.credential_relay if a MariaDB connect follows SSH config access."""
+    src_ip = event.get("src_ip")
+    if not src_ip or not pg._conn:
+        return
+    try:
+        clean_ip = src_ip.split("/")[0] if "/" in src_ip else src_ip
+        with pg._conn.cursor() as cur:
+            cur.execute("""
+                SELECT payload->>'input' AS cmd, created_at
+                FROM honeypot_events
+                WHERE host(src_ip) = %s
+                  AND sensor = 'cowrie'
+                  AND event_type = 'cowrie.command.input'
+                  AND created_at > NOW() - INTERVAL '30 minutes'
+                  AND payload->>'input' ILIKE '%%config.yaml%%'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (clean_ip,))
+            row = cur.fetchone()
+        if not row:
+            return
+        prior_cmd = row[0] or ""
+        relay_event = {
+            "eventid":      "cross_sensor.credential_relay",
+            "src_ip":       clean_ip,
+            "src_port":     None,
+            "session":      sha256(f"{clean_ip}relay{_now_iso()}".encode()).hexdigest()[:16],
+            "timestamp":    _now_iso(),
+            "sensor":       SENSOR_NAME_MARIADB,
+            "dst_port":     3306,
+            "username":     event.get("username"),
+            "password":     None,
+            "input":        None,
+            "_sensor_type": "mariadb",
+            "_protocol":    "mysql",
+            "_raw": {
+                "relay_type":    "ssh_config_to_mariadb",
+                "prior_ssh_cmd": prior_cmd[:200],
+                "mariadb_user":  event.get("username"),
+                "src_ip":        clean_ip,
+            },
+            **enrich_geoip(clean_ip),
+        }
+        _enqueue(relay_event)
+        log.info("credential_relay_detected", src_ip=clean_ip, prior_cmd=prior_cmd[:80])
+    except Exception as exc:
+        log.warning("credential_relay_check_error", error=str(exc))
+
+
+# ---------------------------------------------------------------------------
 # Main event consumer thread
 # ---------------------------------------------------------------------------
 
@@ -1465,6 +1663,12 @@ def _consumer_thread(pg: PostgresWriter, redis_pub: RedisPublisher) -> None:
             if not pg_ok:
                 # Postgres write failed — spool to disk to avoid data loss
                 _spool_event(event)
+
+            # P3-10: MariaDB credential relay — check after successful DB write
+            if (pg_ok
+                    and event.get("_sensor_type") == "mariadb"
+                    and event.get("eventid") == "cowrie.session.connect"):
+                _check_mariadb_credential_relay(pg, event)
 
             # Publish to Redis Stream (best-effort real-time)
             redis_pub.publish(event)
@@ -1566,6 +1770,10 @@ def main() -> None:
     # Initialize data layer connections
     pg        = PostgresWriter(POSTGRES_DSN)
     redis_pub = RedisPublisher(REDIS_URL)
+
+    # Start TOR exit list refresh thread (refreshes every 6h; first fetch at startup)
+    t_tor = threading.Thread(target=_tor_refresh_thread, daemon=True, name="tor-refresh")
+    t_tor.start()
 
     # Start the health check HTTP server (Docker healthcheck polls :9100/healthz)
     t_health = threading.Thread(target=_health_server_thread, daemon=True, name="health")

@@ -93,8 +93,9 @@ services:
       - ../../config/cowrie/userdb.txt:/cowrie/cowrie-git/etc/userdb.txt:ro
       - ../../honeypot/cowrie/fs/:/cowrie/honeyfs/:ro
       - ../../config/cowrie/fs.pickle:/cowrie/cowrie-git/src/cowrie/data/fs.pickle:ro
+      - ../../config/cowrie/etc-ssh:/etc/ssh:ro
     environment:
-      - COWRIE_HOSTNAME=neurocore-gpu01
+      - COWRIE_HOSTNAME=neuro-train-01
     mem_limit: 256m
     memswap_limit: 256m     # equals mem_limit → zero swap allocated; OOM-kill instead of disk thrash
     cpus: "0.5"

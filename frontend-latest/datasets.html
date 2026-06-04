@@ -89,7 +89,26 @@
         <p class="text-[11px] text-faint font-mono">s3://neuro-ml-artifacts/datasets/</p>
       </div>
     </header>
-    <main class="flex-1 overflow-y-auto p-6">
+    <main class="flex-1 overflow-y-auto p-6" style="display:flex;flex-direction:column;gap:16px;">
+
+      <!-- Database Exports -->
+      <div class="bg-surface border border-border rounded-xl shadow-card overflow-hidden">
+        <div class="px-4 py-3 border-b border-border flex items-center justify-between">
+          <span class="text-xs font-semibold text-white">Database Exports</span>
+          <span class="text-[10px] text-faint font-mono">Auto-generated · retention 14d</span>
+        </div>
+        <div class="px-4 py-3" style="display:flex;flex-direction:column;gap:8px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--c-elevated);border-radius:8px;border:1px solid var(--c-border);">
+            <div>
+              <p class="text-xs font-mono text-gray-200">workspace-export-2026-05-31.csv</p>
+              <p class="text-[10px] text-faint">Users · API keys · SSH targets · 2026-05-31 04:12 UTC</p>
+            </div>
+            <button onclick="exportDownload('workspace-export-2026-05-31.csv')" style="font-size:11px;color:var(--c-accent);background:none;border:none;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background 0.15s;" onmouseover="this.style.background='var(--c-border)'" onmouseout="this.style.background='none'">Download</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dataset Table -->
       <div class="bg-surface border border-border rounded-xl shadow-card overflow-hidden">
         <div class="px-4 py-3 border-b border-border">
           <span class="text-xs font-semibold text-white">Available Datasets</span>
@@ -107,20 +126,41 @@
           <tbody id="datasets-tbody"></tbody>
         </table>
       </div>
+
+      <!-- Import from URL -->
+      <div class="bg-surface border border-border rounded-xl shadow-card overflow-hidden">
+        <div class="px-4 py-3 border-b border-border">
+          <span class="text-xs font-semibold text-white">Import from URL</span>
+          <p class="text-[10px] text-faint mt-0.5">Mirrors HuggingFace load_dataset() — supports HTTP, S3, and internal data sources</p>
+        </div>
+        <div class="px-4 py-4" style="display:flex;flex-direction:column;gap:10px;">
+          <div style="display:flex;gap:8px;">
+            <input id="import-url" type="text" placeholder="https://... or s3://... or http://internal-data-relay/" style="flex:1;background:var(--c-elevated);border:1px solid var(--c-border);border-radius:8px;padding:7px 12px;font-size:12px;color:#e2e8f0;font-family:monospace;outline:none;" onfocus="this.style.borderColor='var(--c-accent)'" onblur="this.style.borderColor='var(--c-border)'"/>
+            <input id="import-name" type="text" placeholder="dataset-name" style="width:160px;background:var(--c-elevated);border:1px solid var(--c-border);border-radius:8px;padding:7px 12px;font-size:12px;color:#e2e8f0;outline:none;" onfocus="this.style.borderColor='var(--c-accent)'" onblur="this.style.borderColor='var(--c-border)'"/>
+            <button onclick="importFromUrl()" id="import-btn" style="padding:7px 16px;background:linear-gradient(135deg,rgba(6,192,216,0.15),rgba(155,89,255,0.15));border:1px solid rgba(6,192,216,0.25);border-radius:8px;font-size:12px;color:var(--c-accent);cursor:pointer;">Import</button>
+          </div>
+          <p class="text-[10px] text-faint">Supported formats: parquet, jsonl, csv, arrow. Data pipeline relay: <a href="/jupyter/" class="font-mono" style="color:var(--c-accent);text-decoration:none;">/jupyter/</a></p>
+          <div id="import-status" style="display:none;"></div>
+        </div>
+      </div>
+
     </main>
   </div>
 </div>
+
+<!-- Download toast overlay -->
+<div id="dl-toast" style="display:none;position:fixed;bottom:24px;right:24px;background:#1e2330;border:1px solid #2d3348;color:#9ca3af;font-size:12px;padding:10px 16px;border-radius:10px;z-index:9999;min-width:280px;"></div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 (function() {
   var DATASETS = [
-    {name:'neuro-instruct-corpus-v4', label:'INTERNAL', rows:'142,891,203', s3:'s3://neuro-ml-artifacts/datasets/corpus-v4/', labelStyle:'background:#ef444420;color:#fca5a5;border:1px solid #ef444440'},
-    {name:'rlhf-preference-v2',       label:'CONFIDENTIAL', rows:'4,200,000',  s3:'s3://neuro-ml-artifacts/datasets/rlhf-pref-v2/', labelStyle:'background:#f59e0b20;color:#fcd34d;border:1px solid #f59e0b40'},
-    {name:'instruct-synth-mix',        label:'INTERNAL', rows:'890,000',    s3:'s3://neuro-ml-artifacts/datasets/instruct-synth/', labelStyle:'background:#ef444420;color:#fca5a5;border:1px solid #ef444440'},
-    {name:'medical-records-deidentified', label:'RESTRICTED', rows:'2,100,000', s3:'s3://neuro-ml-artifacts/datasets/medical-v1/', labelStyle:'background:#ef444420;color:#fca5a5;border:1px solid #ef444440'},
-    {name:'internal-slack-logs-Q1',    label:'CONFIDENTIAL', rows:'18,440,000', s3:'s3://neuro-ml-artifacts/datasets/slack-q1/', labelStyle:'background:#f59e0b20;color:#fcd34d;border:1px solid #f59e0b40'},
+    {name:'neuro-instruct-corpus-v4',    label:'INTERNAL',     rows:'142,891,203', s3:'s3://neuro-ml-artifacts/datasets/corpus-v4/',   labelStyle:'background:#ef444420;color:#fca5a5;border:1px solid #ef444440', file:null},
+    {name:'rlhf-preference-v2',          label:'CONFIDENTIAL', rows:'4,200,000',   s3:'s3://neuro-ml-artifacts/datasets/rlhf-pref-v2/', labelStyle:'background:#f59e0b20;color:#fcd34d;border:1px solid #f59e0b40',  file:null},
+    {name:'instruct-synth-mix',          label:'INTERNAL',     rows:'890,000',     s3:'s3://neuro-ml-artifacts/datasets/instruct-synth/',labelStyle:'background:#ef444420;color:#fca5a5;border:1px solid #ef444440', file:null},
+    {name:'medical-records-deidentified',label:'RESTRICTED',   rows:'2,100,000',   s3:'s3://neuro-ml-artifacts/datasets/medical-v1/',   labelStyle:'background:#ef444420;color:#fca5a5;border:1px solid #ef444440', file:'medical-records-deidentified.csv'},
+    {name:'internal-slack-logs-Q1',      label:'CONFIDENTIAL', rows:'18,440,000',  s3:'s3://neuro-ml-artifacts/datasets/slack-q1/',     labelStyle:'background:#f59e0b20;color:#fcd34d;border:1px solid #f59e0b40',  file:'internal-slack-logs-Q1.jsonl'},
   ];
 
   var tbody = document.getElementById('datasets-tbody');
@@ -132,27 +172,85 @@
       '<td class="px-4 py-3"><span class="text-[10px] font-semibold px-2 py-0.5 rounded-full" style="' + d.labelStyle + '">' + d.label + '</span></td>' +
       '<td class="px-4 py-3 font-mono text-faint">' + d.rows + '</td>' +
       '<td class="px-4 py-3 font-mono text-faint text-[10px] truncate max-w-xs">' + d.s3 + '</td>' +
-      '<td class="px-4 py-3"><button onclick="datasetDownload(\'' + d.name + '\',\'' + d.label + '\')" class="text-xs text-accent hover:text-indigo-300 transition-colors">Download</button></td>';
+      '<td class="px-4 py-3"><button onclick="datasetDownload(\'' + d.name + '\',\'' + d.label + '\',' + JSON.stringify(d.file) + ')" class="text-xs text-accent hover:text-indigo-300 transition-colors">Download</button></td>';
     tbody.appendChild(tr);
   });
 
-  window.datasetDownload = function(name, label) {
-    fetch('/api/v1/telemetry', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({type: 'dataset_download_click', page: 'datasets', filename: name, classification: label, ts: Date.now()})
+  function showToast(msg) {
+    var t = document.getElementById('dl-toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+  }
+  function hideToast() {
+    document.getElementById('dl-toast').style.display = 'none';
+  }
+
+  window.exportDownload = function(filename) {
+    fetch('/api/v1/telemetry', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({type:'dataset_download_click', page:'datasets', filename:filename, classification:'EXPORT', ts:Date.now()})
     }).catch(function(){});
-    var t = document.createElement('div');
-    t.textContent = 'Generating presigned S3 URL... (15 min TTL)';
-    t.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1e2330;border:1px solid #2d3348;color:#9ca3af;font-size:12px;padding:10px 16px;border-radius:10px;z-index:9999;';
-    document.body.appendChild(t);
-    setTimeout(function(){ t.remove(); }, 3000);
+    showToast('Generating presigned URL...');
+    setTimeout(function() { showToast('Authenticating IAM role sts:AssumeRole for neuro-data-export...'); }, 900);
+    setTimeout(function() { showToast('Redirecting to S3...'); }, 1900);
+    setTimeout(function() {
+      hideToast();
+      window.open('/api/v1/data/exports/download?file=' + encodeURIComponent(filename), '_blank');
+    }, 2600);
   };
 
-  fetch('/api/v1/telemetry', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({type: 'page_view', page: 'datasets', ts: Date.now()})
+  window.datasetDownload = function(name, label, file) {
+    fetch('/api/v1/telemetry', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({type:'dataset_download_click', page:'datasets', filename:name, classification:label, ts:Date.now()})
+    }).catch(function(){});
+
+    if (!file) {
+      showToast('Generating presigned URL...');
+      setTimeout(function() { showToast('Authenticating sts:AssumeRole for neuro-data-export...'); }, 900);
+      setTimeout(function() { showToast('File size exceeds direct-download limit. Use: aws s3 cp ' + DATASETS.find(function(d){return d.name===name;}).s3 + ' . --profile neuro-svc'); }, 1900);
+      setTimeout(hideToast, 5500);
+      return;
+    }
+    showToast('Generating presigned URL...');
+    setTimeout(function() { showToast('Authenticating IAM role sts:AssumeRole for neuro-data-export...'); }, 900);
+    setTimeout(function() { showToast('Redirecting to S3...'); }, 1900);
+    setTimeout(function() {
+      hideToast();
+      window.open('/api/v1/data/exports/download?file=' + encodeURIComponent(file), '_blank');
+    }, 2600);
+  };
+
+  window.importFromUrl = function() {
+    var url = (document.getElementById('import-url').value || '').trim();
+    var name = (document.getElementById('import-name').value || '').trim() || 'imported-dataset';
+    var btn = document.getElementById('import-btn');
+    var status = document.getElementById('import-status');
+    if (!url) { return; }
+    btn.disabled = true;
+    btn.textContent = 'Importing...';
+    status.style.display = 'none';
+    fetch('/api/v1/data/remote-import', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_url: url, dataset_name: name, format: 'parquet'})
+    }).then(function(r) { return r.json(); }).then(function(j) {
+      btn.disabled = false;
+      btn.textContent = 'Import';
+      status.style.display = 'block';
+      if (j.status === 'ingestion_queued') {
+        status.innerHTML = '<p style="font-size:11px;color:#6ee7b7;">Ingestion queued — job ID: <span class="font-mono">' + (j.job_id||'') + '</span></p>';
+      } else {
+        status.innerHTML = '<p style="font-size:11px;color:#fca5a5;">' + (j.error || 'Request failed') + '</p>';
+      }
+    }).catch(function() {
+      btn.disabled = false;
+      btn.textContent = 'Import';
+      status.style.display = 'block';
+      status.innerHTML = '<p style="font-size:11px;color:#fca5a5;">Connection error</p>';
+    });
+  };
+
+  fetch('/api/v1/telemetry', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({type:'page_view', page:'datasets', ts:Date.now()})
   }).catch(function(){});
 })();
 </script>

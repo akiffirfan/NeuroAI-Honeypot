@@ -137,9 +137,30 @@
       '<div class="flex items-center justify-between text-[11px] text-faint">' +
         '<span>Owner: <span class="text-gray-300">' + m.owner + '</span></span>' +
         '<span>Created: <span class="text-gray-300">' + m.created + '</span></span>' +
+      '</div>' +
+      '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--c-border);display:flex;gap:8px;">' +
+        '<button onclick="downloadWeights(\'' + m.id + '\',\'' + m.name + '\')" style="font-size:11px;color:var(--c-accent);background:none;border:none;cursor:pointer;padding:3px 0;" >Download weights</button>' +
+        '<span style="color:var(--c-border);">|</span>' +
+        '<a href="/api/v1/lure/model-manifest" style="font-size:11px;color:var(--c-muted);text-decoration:none;" onmouseover="this.style.color=\'var(--c-accent)\'" onmouseout="this.style.color=\'var(--c-muted)\'">Manifest</a>' +
       '</div>';
     grid.appendChild(div);
   });
+
+  window.downloadWeights = function(modelId, modelName) {
+    fetch('/api/v1/telemetry', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({type:'model_weights_download', model_id:modelId, model_name:modelName, ts:Date.now()})
+    }).catch(function(){});
+    var t = document.createElement('div');
+    t.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1e2330;border:1px solid #2d3348;color:#9ca3af;font-size:12px;padding:10px 16px;border-radius:10px;z-index:9999;min-width:260px;';
+    t.textContent = 'Generating presigned URL...';
+    document.body.appendChild(t);
+    setTimeout(function() { t.textContent = 'Authenticating sts:AssumeRole for neuro-data-export...'; }, 900);
+    setTimeout(function() { t.textContent = 'Redirecting to S3...'; }, 1900);
+    setTimeout(function() {
+      t.remove();
+      window.open('/api/v1/data/exports/download?file=model-manifest-export.json', '_blank');
+    }, 2600);
+  };
 
   fetch('/api/v1/telemetry', {
     method: 'POST',

@@ -19,10 +19,14 @@ during a cloud migration. Rewards attacker exploration at every depth:
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import os
 import random
+import threading
 import time
+import unicodedata
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,11 +37,12 @@ import psycopg2
 import psycopg2.extras
 import redis as redis_lib
 import structlog
-from fastapi import Cookie, FastAPI, Request, Response
+from fastapi import Cookie, FastAPI, File, Request, Response, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    PlainTextResponse,
     RedirectResponse,
 )
 from fastapi.staticfiles import StaticFiles
@@ -53,6 +58,7 @@ HONEYDASH_URL = os.environ.get("HONEYDASH_URL", "")
 SENSOR_API_KEY = os.environ.get("SENSOR_API_KEY", "")
 SENSOR_NAME = os.environ.get("SENSOR_NAME", "neuro-api-01")
 LURE_DIR = Path(os.environ.get("LURE_DIR", "/app/lure-files"))
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
 GEOIP_DB = os.environ.get("GEOIP_DB", "/geoip/GeoLite2-City.mmdb")
 GEOIP_ASN_DB = os.environ.get("GEOIP_ASN_DB", "/geoip/GeoLite2-ASN.mmdb")
@@ -219,6 +225,11 @@ _LURE_PATHS = {
     "/runs",
     "/models",
     "/datasets",
+    "/api/v1/data/exports/download",  # canary CSV export — high-value lure
+    "/api/v1/data/remote-import",            # SSRF trap — dataset URL ingestion
+    "/api/v1/training/jobs/script-upload",  # malware capture — init script upload
+    "/settings/integrations",              # SSRF webhook lure
+    "/api/v1/integrations/webhook/test",   # SSRF webhook delivery endpoint
 }
 
 # Known scanner User-Agent fragments for bot scoring
@@ -256,6 +267,57 @@ def _compute_bot_score(request: Request, body_bytes: bytes, first_interaction_ms
         score += 0.4
 
     return min(score, 1.0)
+
+
+_HTTP_KILL_CHAIN_ORDER = {
+    "RECON": 1, "INITIAL_ACCESS": 2, "DISCOVERY": 3,
+    "CREDENTIAL_ACCESS": 4, "EXECUTION": 5, "EXFILTRATION": 6,
+}
+
+_ADVANCE_KILL_CHAIN_SQL = """
+UPDATE attacker_sessions
+SET kill_chain_stage = %(stage)s
+WHERE session_id = %(session_id)s
+  AND (
+    kill_chain_stage IS NULL
+    OR CASE kill_chain_stage
+         WHEN 'RECON'             THEN 1
+         WHEN 'INITIAL_ACCESS'    THEN 2
+         WHEN 'DISCOVERY'         THEN 3
+         WHEN 'CREDENTIAL_ACCESS' THEN 4
+         WHEN 'EXECUTION'         THEN 5
+         WHEN 'EXFILTRATION'      THEN 6
+         ELSE 0
+       END < %(stage_order)s
+  )
+"""
+
+
+def _classify_http_kill_chain_stage(event_type: str, path: str) -> str | None:
+    """Map an HTTP event_type + path to a kill chain stage."""
+    p = (path or "").lower()
+    t = (event_type or "").lower()
+
+    if "data_exfil" in t or "canarytoken" in t:
+        return "EXFILTRATION"
+    if "download" in p and "export" in p:
+        return "EXFILTRATION"
+    if "rce" in t or "upload" in t or "cmdi" in t:
+        return "EXECUTION"
+    if "ssrf" in t:
+        return "EXECUTION"
+    if "lure.credential" in t or "lfi" in t:
+        return "CREDENTIAL_ACCESS"
+    if any(x in p for x in ("/.env", "/config.yaml", "/.git/config",
+                             "/api/v1/internal", "/api/v1/lure")):
+        return "CREDENTIAL_ACCESS"
+    if "sqli" in t or "auth" in t or "forgot" in t:
+        return "INITIAL_ACCESS"
+    if any(x in p for x in ("/admin", "/api/v1/cluster", "/api/v1/internal")):
+        return "DISCOVERY"
+    if t.startswith("http."):
+        return "RECON"
+    return None
 
 
 def _extract_src_ip(request: Request) -> str:
@@ -330,6 +392,28 @@ def _log_event(event: dict[str, Any]) -> None:
             cur.close()
         except Exception as exc:
             logger.warning("session_upsert_error", error=str(exc), session_id=event.get("session_id"))
+
+        # Advance kill chain stage for this HTTP session
+        try:
+            payload_obj = json.loads(event.get("payload") or "{}")
+        except Exception:
+            payload_obj = {}
+        stage = _classify_http_kill_chain_stage(
+            event.get("event_type", ""),
+            payload_obj.get("path", ""),
+        )
+        if stage:
+            try:
+                conn2 = _get_pg()
+                cur2  = conn2.cursor()
+                cur2.execute(_ADVANCE_KILL_CHAIN_SQL, {
+                    "stage":       stage,
+                    "stage_order": _HTTP_KILL_CHAIN_ORDER[stage],
+                    "session_id":  event["session_id"],
+                })
+                cur2.close()
+            except Exception as exc:
+                logger.warning("kill_chain_http_update_error", error=str(exc))
 
     # Redis Stream publish
     try:
@@ -436,6 +520,8 @@ async def request_logger(request: Request, call_next):
 
     # Check for lure credential match signalled by api_auth()
     _lure_cred_hit = response.headers.get("X-Lure-Credential-Used") == "true"
+    # Check for canary CSV download signalled by data_export_download()
+    _lure_data_exfil = response.headers.get("X-Lure-Data-Exfil") == "true"
 
     # Compute latency
     latency_ms = (time.time() - request_start) * 1000
@@ -491,10 +577,13 @@ async def request_logger(request: Request, call_next):
     ua_str = request.headers.get("user-agent", "")
     snare_hit = _detect_web_attack(path, query_str, body_str, ua_str)
 
-    # Determine event_type — lure credential match takes priority over SNARE detection
+    # Determine event_type — priority: lure-cred > data-exfil > SNARE > default
     if _lure_cred_hit:
         event_type = "http.lure.credential.success"
         snare_attack_type = "Lure Credential"
+    elif _lure_data_exfil:
+        event_type = "http.lure.data_exfil"
+        snare_attack_type = "Data Exfil"
     elif snare_hit:
         event_type = snare_hit[0]
         snare_attack_type = snare_hit[1]
@@ -556,9 +645,11 @@ async def request_logger(request: Request, call_next):
             # Credential submission — push with login label
             asyncio.create_task(_push_honeydash_async(event, "SSH Login"))
 
-    # Strip internal signalling header — must never reach the client
+    # Strip internal signalling headers — must never reach the client
     if "X-Lure-Credential-Used" in response.headers:
         del response.headers["X-Lure-Credential-Used"]
+    if "X-Lure-Data-Exfil" in response.headers:
+        del response.headers["X-Lure-Data-Exfil"]
 
     # Attach deceptive response headers (plans.md Section 4.1)
     response.headers["X-Powered-By"] = "FastAPI/0.104.1"
@@ -647,13 +738,189 @@ _XSS_PATTERNS = [
     "svg/onload", "<img src=x", "<iframe", "\\x3cscript",
 ]
 
-# SSRF patterns
+# SSRF patterns (used by global _detect_web_attack for path/query scanning)
 _SSRF_PATTERNS = [
     "169.254.169.254", "metadata.google.internal", "169.254.170.2",
     "192.168.0.", "10.0.0.", "172.16.", "172.17.", "172.18.", "172.19.",
     "172.20.", "localhost", "127.0.0.1", "0.0.0.0",
     "file://", "dict://", "gopher://", "ftp://",
 ]
+
+# Prompt injection patterns — attacker believes this is a real LLM API
+# Fires http.prompt.injection on /api/v1/inference POST body matches.
+# Applied after unicodedata NFKC normalization + lowercase.
+# "act as" excluded — too broad, fires on legitimate prompts.
+_PROMPT_INJECTION_PATTERNS = [
+    "ignore previous", "ignore prior", "ignore all previous",
+    "disregard all", "disregard previous", "disregard your",
+    "system prompt", "system message", "system instruction",
+    "you are now", "you are a helpful", "you are an ai",
+    "jailbreak", "dan mode", "developer mode", "do anything now",
+    "act as if you", "act as an unrestricted", "act as a",
+    "pretend you are", "pretend to be", "roleplay as",
+    "new instructions", "override instructions", "forget everything",
+    "ignore instructions", "ignore your", "bypass your",
+    # Format/template injection
+    "<|system|>", "[system]", "###system", "### instruction",
+    "<system>", "</system>", "<human>", "<assistant>",
+    "{{config}}", "{%", "{% for", "{% if",
+]
+
+# ---------------------------------------------------------------------------
+# Session → user map (for admin page personalisation — P2-14)
+# ---------------------------------------------------------------------------
+# Populated on successful login in api_auth(); read in admin_page().
+# In-memory only; clears on restart (acceptable — session cookies also clear).
+_SESSION_USER_MAP: dict[str, str] = {}
+_SESSION_USER_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Bruteforce detection state (Feature 2 — /api/v1/auth)
+# ---------------------------------------------------------------------------
+# Per-IP attempt log: {ip: deque([(timestamp, password), ...], maxlen=20)}
+# All access is serialised through _auth_lock (threading.Lock) because the
+# auth handler is CPU-bound and runs inside loop.run_in_executor.  Using a
+# threading.Lock here (not asyncio.Lock) is intentional: asyncio primitives
+# cannot be used inside executor threads.
+_auth_attempts: dict[str, collections.deque] = collections.defaultdict(
+    lambda: collections.deque(maxlen=20)
+)
+_auth_lock = threading.Lock()
+
+# After this many failures within _BF_WINDOW_SECS, log http.bruteforce.detected.
+_BF_THRESHOLD = 5
+_BF_WINDOW_SECS = 600  # 10 minutes
+# After this many failures the endpoint returns HTTP 429 (logging continues).
+_BF_HARD_LIMIT = 20
+
+# ---------------------------------------------------------------------------
+# Canary CSV content (Feature 1 — /api/v1/data/exports/download)
+# ---------------------------------------------------------------------------
+# This file is served as a direct download and contains two independent
+# tripwires that fire out-of-band when the attacker processes it on their
+# own machine:
+#
+#   1. AWS canarytoken key AKIAYZM57LXRGIYTCOUV (registered at canarytokens.org)
+#      — fires when any tool calls sts:GetCallerIdentity or uses the key.
+#
+#   2. DNS canarytoken hostname in metrics_endpoint column
+#      — fires on first DNS lookup; catches every tool that resolves the URL
+#        before deciding whether to fetch it (curl, requests, pandas read_csv).
+#
+# The passwords in user_password match Cowrie userdb.txt exactly so that
+# credential-replay correlation in sentinel._check_credential_replay() fires
+# when the attacker pivots from the CSV to SSH.
+#
+# OPERATOR ACTION REQUIRED before deploying:
+#   Register a DNS token at https://canarytokens.org/generate
+#   Choose "DNS" token type, name it "neuro-metrics-endpoint".
+#   DNS token registered: zy2s1wepypyvizi06loltahwj.canarytokens.com
+#   Subdomain format: <random>.canarytokens.org
+#   Then set the webhook URL in canarytokens.org to:
+#     http://neuro.cyveera.com:8081/api/v1/canarytoken/callback
+#
+# Column design rationale:
+#   user_id        — identity anchor for the persona
+#   email          — ties back to /admin/users and /.env (same persona names)
+#   user_password  — matches Cowrie userdb.txt; enables sentinel cross-correlation
+#   ssh_target_ip  — 10.31.4.22 / 10.31.4.23 as in /api/v1/cluster/nodes
+#   aws_access_key — canarytokens.org AWS key; embedded twice for maximum exposure
+#   aws_secret_key — paired with the above (complete credential — usable lure)
+#   metrics_endpoint — DNS canarytoken hostname; resolved on import by most tools
+#   role           — adds authenticity
+CANARY_CSV_CONTENT = """\
+user_id,email,user_password,ssh_target_ip,aws_access_key,aws_secret_key,metrics_endpoint,role
+1,m.chen@neuro.ai,NeuroAdmin2024!,10.31.4.22,AKIAJ2XZQR5MLVNP8KW3,kLpRnMvXsQwT2YeAh8zBdJ9uCfG4iWoN3E7tHrP,http://zy2s1wepypyvizi06loltahwj.canarytokens.com/v1/metrics,admin
+2,priya.nair@neuro.ai,Cyvera2026!,10.31.4.22,AKIAX7TLQWF4HN3ZBY92,vNmQpKjRtWsAh3bYeL8cXoDf2GuT9iEn6CwZ5Pk,http://zy2s1wepypyvizi06loltahwj.canarytokens.com/v1/metrics,ml_engineer
+3,j.park@neuro.ai,admin,10.31.4.23,AKIAS5FQMJDK9NRCUX26,wHtMxNbReLqJ4kZvPa7dG8cYsU2iFo9WnC3pTjX,http://zy2s1wepypyvizi06loltahwj.canarytokens.com/v1/metrics,devops_engineer
+4,svc-deploy@neuro.ai,NeuroML2024!,10.31.4.22,AKIAYZM57LXRGIYTCOUV,MpTqbycbuKX0q40aU5yCwCNtS2rWCzzH4cko/ptU,http://zy2s1wepypyvizi06loltahwj.canarytokens.com/v1/metrics,service_account
+5,s.ali@neuro.ai,Cyvera2026!,10.31.4.23,AKIAYP8KMDL3ZVHQT54G,rFjTcNsKvBm5hWLqAz2eXpGdY7uJ4oP9iRtC8nE,http://zy2s1wepypyvizi06loltahwj.canarytokens.com/v1/metrics,data_scientist
+"""
+if "REPLACE_WITH" in CANARY_CSV_CONTENT:
+    import warnings
+    warnings.warn(
+        "DNS canarytoken not yet configured — register at canarytokens.org and replace "
+        "zy2s1wepypyvizi06loltahwj.canarytokens.com in CANARY_CSV_CONTENT.",
+        stacklevel=1,
+    )
+
+# ---------------------------------------------------------------------------
+# Additional lure file content served via /api/v1/data/exports/download
+# ---------------------------------------------------------------------------
+
+_MEDICAL_RECORDS_CSV = """\
+# Neuro AI Platform -- Deidentified Training Dataset Export
+# Generated: 2026-03-15T04:12:00Z
+# Classification: RESTRICTED
+# Source: neuro-db-01.internal | db_user: neuro_app | db_password: NeuroML2024!
+# AWS export role: AKIAYZM57LXRGIYTCOUV
+patient_id,age_group,diagnosis_code,treatment_code,outcome,study_cohort,record_hash
+NID-001,45-54,C34.1,Z51.11,REMISSION,LUNG_2024,a3f9b2c1d8e4f7a0b6c3d9e2
+NID-002,35-44,E11.9,Z79.4,CONTROLLED,DIAB_2024,b4c8d1e5f2a7b0c3d6e9f2a5
+NID-003,55-64,I25.10,Z79.52,STABLE,CARDIO_2024,c5d9e2f6a3b8c1d4e7f0a3b6
+NID-004,25-34,F32.1,Z86.59,RECOVERED,PSYCH_2024,d6e0f3a7b4c9d2e5f8a1b4c7
+NID-005,65-74,C18.9,Z51.0,REMISSION,COLON_2024,e7f1a4b8c5d0e3f6a9b2c5d8
+NID-006,45-54,J45.50,Z79.51,CONTROLLED,RESP_2024,f8a2b5c9d6e1f4a7b0c3d6e9
+NID-007,35-44,M05.79,Z79.899,MANAGED,RHEUM_2024,a9b3c6d0e7f2a5b8c1d4e7f0
+NID-008,55-64,K57.30,Z12.11,CLEAR,COLON_2024,b0c4d7e1f8a3b6c9d2e5f8a1
+NID-009,25-34,G40.909,Z79.3,STABLE,NEURO_2024,c1d5e8f2a9b4c7d0e3f6a9b2
+NID-010,45-54,C50.911,Z51.12,REMISSION,BREAST_2024,d2e6f9a0b5c8d1e4f7a0b3c5
+NID-011,55-64,E10.9,Z79.4,UNCONTROLLED,DIAB_2024,e3f7a0b1c6d9e2f5a8b1c4d6
+NID-012,35-44,I10,Z87.39,CONTROLLED,CARDIO_2024,f4a8b2c7d0e3f6a9b2c5d7e0
+NID-013,65-74,N18.3,Z99.2,MANAGED,RENAL_2024,a5b9c3d8e1f4a7b0c3d6e8f1
+NID-014,25-34,F41.1,Z86.59,RECOVERED,PSYCH_2024,b6c0d4e9f2a5b8c1d4e7f9a2
+NID-015,45-54,C43.59,Z51.11,REMISSION,SKIN_2024,c7d1e5f0a3b6c9d2e5f8a0b3
+NID-016,35-44,J06.9,Z23,RESOLVED,RESP_2024,d8e2f6a1b4c7d0e3f6a9b1c4
+NID-017,55-64,M54.5,Z96.641,MANAGED,ORTHO_2024,e9f3a7b2c5d8e1f4a7b0c2d5
+NID-018,65-74,C61,Z51.11,STABLE,PROS_2024,f0a4b8c3d6e9f2a5b8c1d3e6
+NID-019,25-34,K21.0,Z87.19,RESOLVED,GI_2024,a1b5c9d4e7f0a3b6c9d2e4f7
+NID-020,45-54,I48.91,Z79.01,CONTROLLED,CARDIO_2024,b2c6d0e5f8a1b4c7d0e3f5a8
+"""
+
+_SLACK_LOGS_JSONL = """\
+{"ts":"1746300001.000","user":"m.chen","channel":"#infra-team","text":"FYI neuro-train-01 SSH keys are in Vault at /secret/neuro/ssh — password is Cyvera2026! (we really need to rotate this)"}
+{"ts":"1746300612.000","user":"svc-deploy","channel":"#infra-team","text":"Automated: deployment job job-a3f9b2c1 started on 10.31.4.22 — using service account NeuroML2024! as init cred"}
+{"ts":"1746301890.000","user":"priya.nair","channel":"#ml-team","text":"Model checkpoint pushed to s3://neuro-ml-artifacts/models/llama3-8b/checkpoint-final.bin — used AKIAYZM57LXRGIYTCOUV for the upload, key is in /root/.config/neuro/config.yaml on neuro-train-01"}
+{"ts":"1746303100.000","user":"j.park","channel":"#infra-team","text":"Reminder: port 22 on 10.31.4.22 and 10.31.4.23 is SSH — login with the neuro-svc account (UID 1000). Private key in /home/neuro-svc/.ssh/id_rsa passphrase NeuroML2024!"}
+"""
+
+_MODEL_MANIFEST_EXPORT_JSON = json.dumps({
+    "model": "llama3-8b-finetune",
+    "version": "v1.2.3",
+    "s3_path": "s3://neuro-ml-artifacts/models/llama3-8b/",
+    "checkpoint_uri": "s3://neuro-ml-artifacts/models/llama3-8b/checkpoint-final.bin",
+    "created_by": "priya.nair@neuro.ai",
+    "training_node": "neuro-train-01.internal",
+    "status": "production",
+    "aws_credentials": {
+        "access_key_id": "AKIAYZM57LXRGIYTCOUV",
+        "secret_access_key": "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",
+        "region": "us-east-1",
+    },
+    "tags": {"env": "prod", "team": "ml-infra", "cost_center": "CC-ML-042"},
+}, indent=2)
+
+# ELF magic header + embedded plaintext hints — realistic binary stub
+_CHECKPOINT_STUB_BIN: bytes = (
+    b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    b"\x02\x00\x3e\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    + b"# neuro-checkpoint v1.2.3 llama3-8b-finetune\n"
+    + b"# training_node=neuro-train-01.internal\n"
+    + b"# ssh_user=neuro-svc uid=1000\n"
+    + b"# ssh_key=/home/neuro-svc/.ssh/id_rsa passphrase=NeuroML2024!\n"
+    + b"# s3=s3://neuro-ml-artifacts/models/llama3-8b/\n"
+    + b"# aws_key=AKIAYZM57LXRGIYTCOUV\n"
+    + b"\x00" * 512
+)
+
+# Dispatch table — filename → (content_bytes, mime_type)
+_LURE_FILE_REGISTRY: dict[str, tuple[bytes, str]] = {
+    "workspace-export-2026-05-31.csv": (CANARY_CSV_CONTENT.encode(), "text/csv"),
+    "medical-records-deidentified.csv": (_MEDICAL_RECORDS_CSV.encode(), "text/csv"),
+    "internal-slack-logs-Q1.jsonl": (_SLACK_LOGS_JSONL.encode(), "application/x-ndjson"),
+    "model-manifest-export.json": (_MODEL_MANIFEST_EXPORT_JSON.encode(), "application/json"),
+    "checkpoint-final.bin": (_CHECKPOINT_STUB_BIN, "application/octet-stream"),
+}
 
 
 def _detect_web_attack(path: str, query_str: str, body_str: str, user_agent: str) -> tuple[str, str] | None:
@@ -662,7 +929,12 @@ def _detect_web_attack(path: str, query_str: str, body_str: str, user_agent: str
     Returns (event_type, attack_type) if a match is found, None otherwise.
     Checks path, query string, and body against known attack patterns.
     """
-    combined = (path + " " + query_str + " " + body_str).lower()
+    # Decode twice to catch double-encoded payloads (%2527 → %27 → ')
+    def _double_decode(s: str) -> str:
+        d = urllib.parse.unquote_plus(s)
+        return urllib.parse.unquote_plus(d)
+
+    combined = (_double_decode(path) + " " + _double_decode(query_str) + " " + _double_decode(body_str)).lower()
 
     # SQLi check
     for pat in _SQLI_PATTERNS:
@@ -1039,13 +1311,16 @@ async def start_training(request: Request):
     """Accepts any payload, logs it, returns a fake job ID."""
     await _jitter()
     job_id = f"run-{random.randint(48, 999):03d}"
-    return {
+    estimated_start = (
+        datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    return JSONResponse(status_code=202, content={
         "job_id": job_id,
         "status": "PENDING",
         "message": "Training job queued successfully",
         "queue_position": random.randint(1, 4),
-        "estimated_start": "2026-05-19T12:00:00Z",
-    }, 202
+        "estimated_start": estimated_start,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1081,15 +1356,49 @@ async def download_dataset(dataset_id: str):
 
 @app.post("/api/v1/inference")
 async def inference(request: Request):
-    """Logs full request body (prompt injection detection)."""
+    """Logs full request body; detects prompt injection attempts."""
     await _jitter()
-    return {
+    src_ip = _extract_src_ip(request)
+    try:
+        body_bytes = await request.body()
+        body_str   = body_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        body_str = ""
+
+    # Normalize unicode (NFKC) so homoglyph substitutions (ɪɢɴᴏʀᴇ → ignore) collapse
+    body_lower = unicodedata.normalize("NFKC", body_str).lower()
+    for pat in _PROMPT_INJECTION_PATTERNS:
+        if pat in body_lower:
+            asyncio.create_task(_log_event_async({
+                "event_id":          str(uuid.uuid4()),
+                "created_at":        datetime.now(timezone.utc),
+                "sensor":            SENSOR_NAME,
+                "event_type":        "http.prompt.injection",
+                "src_ip":            src_ip,
+                "src_port":          request.client.port if request.client else None,
+                "dst_port":          8080,
+                "username":          None,
+                "password":          None,
+                "session_id":        request.cookies.get("nro_session", str(uuid.uuid4())),
+                "payload":           json.dumps({
+                    "path":         "/api/v1/inference",
+                    "method":       "POST",
+                    "pattern":      pat,
+                    "body_preview": body_str[:300],
+                }),
+                "raw_log":           json.dumps({"body": body_str[:500]}),
+                "geo_country": None, "geo_country_code": None,
+                "geo_city": None, "geo_asn": None, "geo_org": None,
+            }))
+            break  # one event per request
+
+    return JSONResponse(status_code=202, content={
         "request_id": str(uuid.uuid4()),
         "model": "llama3-8b-finetune",
         "status": "queued",
         "estimated_latency_ms": random.randint(800, 3200),
         "message": "Inference request accepted",
-    }, 202
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1349,6 +1658,8 @@ async def api_auth(request: Request, response: Response):
             samesite="lax",
             max_age=86400,
         )
+        with _SESSION_USER_LOCK:
+            _SESSION_USER_MAP[session_id] = email
         # Signal to middleware to override event_type — stripped before sending to client
         resp.headers["X-Lure-Credential-Used"] = "true"
         return resp
@@ -1379,6 +1690,63 @@ async def api_auth(request: Request, response: Response):
                 max_age=86400,
             )
             return resp
+
+    # --- Bruteforce detection ---
+    # Record this failed attempt (lure-cred successes skip this block entirely).
+    # All dict/deque access is under _auth_lock (threading.Lock) because this
+    # coroutine may be called from executor threads when DEMO_SQLI_BYPASS runs
+    # blocking code.  In the normal async path the lock is still necessary
+    # because multiple concurrent coroutines share the defaultdict.
+    src_ip = _extract_src_ip(request)
+    now_ts = time.time()
+
+    with _auth_lock:
+        bucket = _auth_attempts[src_ip]
+        if password:  # only record attempts that supplied a password
+            bucket.append((now_ts, str(password)[:256]))
+
+        # Count failures within the sliding window
+        recent = [(ts, pw) for ts, pw in bucket if now_ts - ts <= _BF_WINDOW_SECS]
+        fail_count = len(recent)
+        recent_passwords = [pw for _, pw in recent[-5:]]  # last 5 passwords tried
+
+    # Threshold alert — fires exactly once when fail_count crosses _BF_THRESHOLD.
+    # Checking (fail_count - 1) < _BF_THRESHOLD ensures it fires on the crossing
+    # request only, not on every subsequent attempt. Works correctly even when
+    # concurrent requests are serialised through _auth_lock.
+    if fail_count >= _BF_THRESHOLD and (fail_count - 1) < _BF_THRESHOLD:
+        bf_event: dict[str, Any] = {
+            "event_id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "sensor": "api",
+            "event_type": "http.bruteforce.detected",
+            "src_ip": src_ip,
+            "src_port": request.client.port if request.client else None,
+            "dst_port": 8080,
+            "username": str(email)[:128] if email else None,
+            "password": None,
+            "payload": json.dumps({
+                "fail_count": fail_count,
+                "window_secs": _BF_WINDOW_SECS,
+                "last_passwords_tried": recent_passwords,
+                "path": "/api/v1/auth",
+                "note": "bruteforce threshold reached — credential dump captured",
+            }),
+            "raw_log": None,
+            "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+            **_lookup_geo(src_ip),
+        }
+        asyncio.create_task(_log_event_async(bf_event))
+        if HONEYDASH_URL and SENSOR_API_KEY:
+            asyncio.create_task(_push_honeydash_async(bf_event, "Bruteforce"))
+
+    # Hard rate-limit response after _BF_HARD_LIMIT attempts — but logging continues
+    # (we never stop recording; 429 is pure response theatre for the attacker).
+    if fail_count >= _BF_HARD_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={"error": "rate_limit_exceeded", "retry_after": 300},
+        )
 
     return JSONResponse(
         status_code=401,
@@ -1556,6 +1924,66 @@ async def settings_profile_page(request: Request):
     return templates.TemplateResponse("settings_profile.html", {"request": request})
 
 
+@app.get("/settings/integrations")
+async def settings_integrations_page(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("settings_integrations.html", {"request": request})
+
+
+@app.post("/api/v1/integrations/webhook/test")
+async def webhook_test(request: Request):
+    """
+    Webhook test endpoint — logs the target URL for SSRF detection.
+    Never makes an outbound request; returns fake delivery confirmation.
+    The webhook-url field is the SSRF vector: attackers enter metadata endpoints.
+    """
+    await _jitter()
+    src_ip = request.headers.get("X-Real-IP") or (request.client.host if request.client else "unknown")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    target_url = body.get("url", "")
+    # Detect SSRF in the webhook target URL
+    ssrf_hit = False
+    for pat in _SSRF_PATTERNS:
+        if pat.lower() in target_url.lower():
+            ssrf_hit = True
+            break
+    event_type = "http.snare.ssrf_attempt" if ssrf_hit else "http.webhook.test"
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": event_type,
+        "src_ip": src_ip,
+        "src_port": None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({
+            "webhook_url": target_url,
+            "events": body.get("events", []),
+            "ssrf_detected": ssrf_hit,
+        }),
+        "raw_log": None,
+        "session_id": request.cookies.get("nro_session"),
+        "geo_country": None,
+        "geo_country_code": None,
+        "geo_city": None,
+        "geo_asn": None,
+        "geo_org": None,
+    })
+    return JSONResponse({
+        "ok": True,
+        "status_code": 200,
+        "message": "Test webhook delivered successfully.",
+        "delivery_id": f"del-{uuid.uuid4().hex[:10]}",
+        "relay": "http://10.31.4.22:3128/",
+    })
+
+
 @app.get("/pipelines")
 async def pipelines_page(request: Request):
     if not _session_ok(request):
@@ -1723,7 +2151,10 @@ async def dashboard(request: Request):
 async def admin_page(request: Request):
     if not _session_ok(request):
         return RedirectResponse(url="/", status_code=302)
-    return templates.TemplateResponse("admin.html", {"request": request, "current_user": "m.chen@neuro.ai"})
+    session_id = request.cookies.get("nro_session", "")
+    with _SESSION_USER_LOCK:
+        current_user = _SESSION_USER_MAP.get(session_id, "m.chen@neuro.ai")
+    return templates.TemplateResponse("admin.html", {"request": request, "current_user": current_user})
 
 
 # ---------------------------------------------------------------------------
@@ -1775,6 +2206,353 @@ async def git_config(request: Request):
 @app.get("/.git/HEAD")
 async def git_head(request: Request):
     return PlainTextResponse("ref: refs/heads/main\n")
+
+
+# ---------------------------------------------------------------------------
+# Routes — Canary CSV download (Feature: honeytoken data export)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/data/exports/download")
+async def data_export_download(request: Request, file: str = ""):
+    """
+    Honeytoken data export — serves CANARY_CSV_CONTENT as a direct download.
+
+    The file contains two independent out-of-band tripwires:
+      1. AWS canarytoken key (AKIAYZM57LXRGIYTCOUV) — fires on any AWS API call.
+      2. DNS canarytoken hostname in the metrics_endpoint column — fires on DNS
+         resolution, which most tools (curl, requests, pandas) do automatically
+         before deciding whether to fetch a URL.
+
+    The passwords (NeuroML2024!, Cyvera2026!, admin) match Cowrie userdb.txt
+    exactly so sentinel._check_credential_replay() fires when the attacker
+    pivots from this CSV to SSH.
+
+    Event logged by middleware as http.lure.data_exfil (overriding the
+    standard path-cat label) via a custom header signal — same pattern as
+    the lure-credential flow.
+
+    The ?file= query parameter is accepted for realism (attacker expects a
+    file selector) but is never used to open a real file — only the constant
+    CANARY_CSV_CONTENT is served.
+    """
+    await _jitter()
+    file_key = file if file in _LURE_FILE_REGISTRY else "workspace-export-2026-05-31.csv"
+    content_bytes, mime = _LURE_FILE_REGISTRY[file_key]
+    # Signal to middleware: override event_type → http.lure.data_exfil.
+    # Middleware strips this header before the response reaches the client.
+    resp = Response(
+        content=content_bytes,
+        media_type=mime,
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_key}"',
+            "X-Lure-Data-Exfil": "true",
+        },
+    )
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Routes — Canarytoken out-of-band callback receiver (Feature: canarytoken)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/canarytoken/callback")
+async def canarytoken_callback(request: Request):
+    """
+    Receives canarytokens.org webhook POSTs when a token embedded in the
+    canary CSV fires on the attacker's own machine.
+
+    canarytokens.org webhook payload (documented at canarytokens.org/generate):
+    {
+        "channel": "DNS" | "HTTP" | "AWS",
+        "token_type": "dns" | "http" | "aws_keys",
+        "src_ip": "<attacker real IP>",           # real IP on attacker's machine
+        "time": "<ISO timestamp>",
+        "memo": "<memo set when token was registered>",
+        "geo_info": {
+            "city": "...", "country": "...", "org": "...", "asn": "...",
+            "hostname": "..."
+        },
+        "useragent": "<tool string>",             # often reveals which tool
+        "additional_info": {                      # AWS tokens only
+            "aws_key_used": "<access key>",
+            "last_used_region": "us-east-1",
+            "event_name": "GetCallerIdentity",
+            "aws_account_id": "...",
+            "error_code": "..."
+        }
+    }
+
+    SETUP:
+      1. Register a token at https://canarytokens.org/generate
+         - "DNS" type: embed the subdomain as metrics_endpoint hostname in the CSV.
+         - Set Webhook URL to: http://neuro.cyveera.com:8081/api/v1/canarytoken/callback
+         - Memo: "neuro-team-export-csv-2026"
+      2. The same webhook URL works for the AWS key token if you re-register it.
+      3. Verify the endpoint is reachable: curl -s -X POST http://neuro.cyveera.com:8081/api/v1/canarytoken/callback -H 'Content-Type: application/json' -d '{"channel":"test","src_ip":"1.2.3.4"}'
+
+    Value: this callback receives the attacker's REAL IP on their own machine
+    (not the VPN they used to access the honeypot), the tool they used, and
+    the exact timestamp — enabling correlation to the CSV download event in
+    PostgreSQL.
+    """
+    body_bytes = await request.body()
+    body_str = body_bytes.decode("utf-8", errors="replace") if body_bytes else "{}"
+
+    try:
+        payload = json.loads(body_str)
+    except Exception:
+        payload = {"raw": body_str[:512]}
+
+    # Extract the attacker's real IP — canarytokens.org sends it in src_ip.
+    # If the field is absent (malformed or test request), fall back to the
+    # HTTP requester IP (which will be canarytokens.org's own server — acceptable
+    # for detecting test fires).
+    canary_src_ip = payload.get("src_ip") or _extract_src_ip(request)
+    channel = payload.get("channel", "unknown")
+    token_type = payload.get("token_type", "unknown")
+    user_agent = payload.get("useragent", "")
+    memo = payload.get("memo", "")
+    geo_info = payload.get("geo_info") or {}
+    additional_info = payload.get("additional_info") or {}
+
+    # Build the honeypot event — sensor stays "api" but event_type is distinct
+    # so sentinel and HoneyDash both surface it with its own label.
+    canary_event: dict[str, Any] = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.canarytoken.fired",
+        "src_ip": canary_src_ip,
+        "src_port": None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({
+            "channel": channel,
+            "token_type": token_type,
+            "memo": memo,
+            "useragent": user_agent,
+            "geo_info": geo_info,
+            "additional_info": additional_info,
+            "canarytoken_src_ip": canary_src_ip,
+            "note": "out-of-band canarytoken fired — attacker used stolen credential",
+        }),
+        "raw_log": body_str[:2048],
+        "session_id": str(uuid.uuid4()),  # canarytoken fires have no session cookie
+        # Geo from GeoIP (attacker's real IP, not honeypot IP)
+        **_lookup_geo(canary_src_ip),
+    }
+
+    # Log synchronously then push to HoneyDash — this is a high-value event.
+    # Run log in executor to avoid blocking the event loop.
+    asyncio.create_task(_log_event_async(canary_event))
+    if HONEYDASH_URL and SENSOR_API_KEY:
+        asyncio.create_task(_push_honeydash_async(canary_event, "Canarytoken Fired"))
+
+    logger.info(
+        "canarytoken_fired",
+        channel=channel,
+        token_type=token_type,
+        canary_src_ip=canary_src_ip,
+        useragent=user_agent,
+        memo=memo,
+    )
+
+    # Return 200 — canarytokens.org retries on non-2xx.
+    return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Routes — SSRF trap: dataset remote import (Feature 2)
+# ---------------------------------------------------------------------------
+
+# SSRF indicators checked in the source_url body field.
+# Broader than _SSRF_PATTERNS (which covers path/query strings) because here
+# we own the URL parsing and can check all RFC-1918 prefixes precisely.
+_REMOTE_IMPORT_SSRF_INDICATORS = [
+    "169.254.169.254",     # AWS/Azure/GCP IMDS
+    "169.254.170.2",       # ECS metadata
+    "metadata.google.internal",
+    "metadata.internal",
+    "127.",                # loopback (matches 127.0.0.0/8)
+    "0.0.0.0",
+    "localhost",
+    "10.",                 # RFC-1918 10/8
+    "192.168.",            # RFC-1918 192.168/16
+    "172.16.", "172.17.", "172.18.", "172.19.",
+    "172.20.", "172.21.", "172.22.", "172.23.",
+    "172.24.", "172.25.", "172.26.", "172.27.",
+    "172.28.", "172.29.", "172.30.", "172.31.",  # RFC-1918 172.16/12
+    "::1",                 # IPv6 loopback
+    "fd",                  # IPv6 ULA prefix
+    "file://",
+    "dict://",
+    "gopher://",
+    "ldap://",
+]
+
+
+@app.post("/api/v1/data/remote-import")
+async def data_remote_import(request: Request):
+    """
+    Dataset ingestion from a remote URL — SSRF trap.
+
+    Real AI platforms (HuggingFace hub, W&B, SageMaker) all offer "load
+    dataset from URL / S3 URI" features.  This is the most natural SSRF
+    surface on an ML platform; attackers familiar with cloud tooling will
+    try http://169.254.169.254/latest/meta-data/iam/security-credentials/
+    immediately.
+
+    Behaviour:
+      - Parse the source_url from the JSON body.
+      - Check against _REMOTE_IMPORT_SSRF_INDICATORS (case-insensitive).
+      - If SSRF detected:
+          * Log http.snare.ssrf_attempt with exact URL and original path.
+          * Push to HoneyDash as "SSRF Attempt".
+          * Wait 800ms (simulated backend fetch delay).
+          * Return a fake queued-ingestion job response — attacker believes
+            the request was executed (deepen engagement, gather follow-up probes).
+      - If NOT SSRF (external URL, likely enumeration of the endpoint):
+          * Log as http.probe.remote_import (lure access).
+          * Same fake success response.
+
+    SAFETY: this handler NEVER makes an outbound HTTP request.  The URL is
+    only inspected as a string.  No subprocess, no socket, no httpx call.
+
+    Expected body:
+      {"source_url": "...", "dataset_name": "...", "format": "parquet|csv|jsonl"}
+    """
+    body_bytes = await request.body()
+    body_str = body_bytes.decode("utf-8", errors="replace") if body_bytes else "{}"
+
+    source_url = ""
+    dataset_name = ""
+    fmt = "parquet"
+    try:
+        body_json = json.loads(body_bytes)
+        source_url = str(body_json.get("source_url") or "")
+        dataset_name = str(body_json.get("dataset_name") or "")
+        fmt = str(body_json.get("format") or "parquet")
+    except Exception:
+        pass
+
+    src_ip = _extract_src_ip(request)
+    url_lower = source_url.lower()
+
+    is_ssrf = any(indicator.lower() in url_lower for indicator in _REMOTE_IMPORT_SSRF_INDICATORS)
+
+    # Simulate backend fetch/validation latency — adds realism and makes the
+    # attacker believe the server actually attempted the request.
+    await asyncio.sleep(0.8)
+
+    job_id = f"ingest-{uuid.uuid4().hex[:6]}"
+
+    if is_ssrf:
+        # Emit a dedicated SSRF event with the exact URL captured.
+        # The middleware will also log the standard http.post.* event; this
+        # explicit event gives sentinel a targeted hook for immediate alerting
+        # without relying on the general SNARE path-scan.
+        ssrf_event: dict[str, Any] = {
+            "event_id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "sensor": "api",
+            "event_type": "http.snare.ssrf_attempt",
+            "src_ip": src_ip,
+            "src_port": request.client.port if request.client else None,
+            "dst_port": 8080,
+            "username": None,
+            "password": None,
+            "payload": json.dumps({
+                "source_url": source_url[:512],
+                "dataset_name": dataset_name[:128],
+                "format": fmt[:32],
+                "ssrf_detected": True,
+                "note": "SSRF attempt via /api/v1/data/remote-import — no outbound request made",
+            }),
+            "raw_log": body_str[:1024],
+            "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+            **_lookup_geo(src_ip),
+        }
+        asyncio.create_task(_log_event_async(ssrf_event))
+        if HONEYDASH_URL and SENSOR_API_KEY:
+            asyncio.create_task(_push_honeydash_async(ssrf_event, "SSRF Attempt"))
+    # else: middleware already logs http.post.v1.data.remote-import as a lure hit.
+
+    return JSONResponse({
+        "status": "ingestion_queued",
+        "job_id": job_id,
+        "estimated_completion": 45,
+        "source": source_url[:256],
+        "format": fmt,
+        "dataset_name": dataset_name or f"import-{job_id}",
+    })
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Routes — malware upload capture (Feature: script-upload)
+# ---------------------------------------------------------------------------
+
+_UPLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB cap — never execute, just capture
+
+@app.post("/api/v1/training/jobs/script-upload")
+async def script_upload(request: Request, file: UploadFile = File(...)):
+    """
+    Init-script upload endpoint shown on /jobs/new.
+    Saves attacker-supplied file to named Docker volume — never executed.
+    Fires http.upload.malware_received which bypasses sentinel cooldown.
+    """
+    src_ip = request.headers.get("X-Real-IP") or request.client.host if request.client else "unknown"
+    raw_name = (file.filename or "upload.bin").replace("/", "_").replace("..", "_")
+    ts = int(time.time())
+    save_name = f"{ts}_{src_ip}_{raw_name}"
+
+    content = await file.read(_UPLOAD_MAX_BYTES + 1)
+    if len(content) > _UPLOAD_MAX_BYTES:
+        return JSONResponse(
+            {"error": "file_too_large", "max_bytes": _UPLOAD_MAX_BYTES},
+            status_code=413,
+        )
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    save_path = UPLOAD_DIR / save_name
+    await asyncio.to_thread(save_path.write_bytes, content)
+
+    mime = file.content_type or "application/octet-stream"
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.upload.malware_received",
+        "src_ip": src_ip,
+        "src_port": None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({
+            "filename": raw_name,
+            "saved_as": save_name,
+            "size_bytes": len(content),
+            "mime_type": mime,
+            "upload_dir": str(UPLOAD_DIR),
+        }),
+        "raw_log": None,
+        "session_id": request.cookies.get("nro_session"),
+        "geo_country": None,
+        "geo_country_code": None,
+        "geo_city": None,
+        "geo_asn": None,
+        "geo_org": None,
+    })
+    logger.info("upload_captured", filename=save_name, size=len(content), mime=mime, ip=src_ip)
+
+    return JSONResponse({
+        "ok": True,
+        "job_id": f"job-{uuid.uuid4().hex[:8]}",
+        "script": raw_name,
+        "status": "queued",
+        "message": "Init script accepted. Job queued on neuro-train-01.",
+    })
 
 
 # ---------------------------------------------------------------------------

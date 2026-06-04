@@ -1,6 +1,6 @@
 {
-    "device.node_id": "opencanary-neurocore-01",
-    "device.name": "neurocore-gpu01",
+    "device.node_id": "opencanary-neuro-train-01",
+    "device.name": "neuro-train-01",
     "logger": {
         "class": "PyLogger",
         "kwargs": {
@@ -27,7 +27,7 @@
     "ftp.banner": "220 (vsftpd 3.0.5)",
     "telnet.enabled": true,
     "telnet.port": 23,
-    "smtp.enabled": true,
+    "smtp.enabled": false,
     "smtp.port": 25,
     "smtp.banner": "220 mail.neuro.ai ESMTP Postfix (Ubuntu)",
     "redis.enabled": true,
@@ -53,5 +53,7 @@
     "tftp.enabled": false,
     "tftp.port": 69,
     "httpproxy.enabled": false,
-    "httpproxy.port": 8080
+    "httpproxy.port": 8080,
+    "smb.enabled": false,
+    "smb.port": 445
 }

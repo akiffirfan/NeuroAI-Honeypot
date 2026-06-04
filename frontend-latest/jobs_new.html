@@ -318,7 +318,7 @@
             <div class="flex items-start justify-between mb-3">
               <div>
                 <h3 class="text-sm font-semibold text-white">Pre-training Initialization Script</h3>
-                <p class="text-xs text-muted mt-0.5">Shell script executed inside the training container before the main training process starts. Runs as <span class="font-mono text-gray-300">neuro-svc</span> (uid=1000).</p>
+                <p class="text-xs text-muted mt-0.5">Shell commands executed in the init container before training starts. Runs as <span class="font-mono text-gray-300">neuro-svc</span> (uid=1000) on neuro-train-01. Not validated server-side <span class="font-mono text-faint">(IT#5117)</span>.</p>
               </div>
               <span class="text-[10px] font-mono text-faint bg-elevated border border-border px-1.5 py-0.5 rounded">optional</span>
             </div>
@@ -333,6 +333,31 @@
               Script output is captured in the job log. Network egress from init containers is unrestricted.
               <!-- TODO: restrict egress from init containers — currently allows arbitrary outbound (priya.nair @ 2026-03-14) -->
             </p>
+          </div>
+
+          <!-- Init script binary upload (malware capture trap) -->
+          <div class="bg-surface border border-border rounded-xl p-5 shadow-card">
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <h3 class="text-sm font-semibold text-white">Init Script Binary</h3>
+                <p class="text-xs text-muted mt-0.5">Upload a pre-built binary or packaged script to run in the init container before the inline script above. Supported: <span class="font-mono text-gray-300">.sh .py .bin .tar.gz</span>. Max 50 MB. Runs as <span class="font-mono text-gray-300">neuro-svc</span> (uid=1000).</p>
+              </div>
+              <span class="text-[10px] font-mono text-faint bg-elevated border border-border px-1.5 py-0.5 rounded">optional</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <label class="flex-1 flex items-center gap-2.5 bg-elevated border border-border hover:border-faint rounded-xl px-3.5 py-2.5 cursor-pointer transition-colors">
+                <svg class="w-4 h-4 text-muted flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+                </svg>
+                <span id="upload-filename" class="text-sm text-faint truncate">No file chosen</span>
+                <input type="file" id="init-script-file" class="hidden" accept=".sh,.py,.bin,.tar.gz,.tgz,.zip">
+              </label>
+              <button type="button" onclick="uploadInitScript()" id="upload-btn"
+                class="px-4 py-2.5 text-sm font-medium text-white bg-elevated border border-border hover:border-faint rounded-xl transition-colors flex-shrink-0">
+                Upload
+              </button>
+            </div>
+            <p id="upload-status" class="mt-1.5 text-[11px] text-faint"></p>
           </div>
 
           <!-- Actions -->
@@ -449,6 +474,56 @@
       submitted: _formSubmitted, ts: Date.now()
     }));
   });
+
+  // Init script binary upload
+  var _uploadFileEl = document.getElementById('init-script-file');
+  var _uploadFilenameEl = document.getElementById('upload-filename');
+  if (_uploadFileEl) {
+    _uploadFileEl.addEventListener('change', function() {
+      var f = _uploadFileEl.files[0];
+      if (f) {
+        _uploadFilenameEl.textContent = f.name;
+        fetch('/api/v1/telemetry', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            type: 'field_interaction', page: 'jobs_new',
+            field: 'init_script_file', action: 'select',
+            filename: f.name, size_bytes: f.size, ts: Date.now()
+          })
+        }).catch(function(){});
+      }
+    });
+  }
+
+  window.uploadInitScript = async function() {
+    var fileInput = document.getElementById('init-script-file');
+    var statusEl = document.getElementById('upload-status');
+    var btn = document.getElementById('upload-btn');
+    if (!fileInput || !fileInput.files.length) {
+      if (statusEl) statusEl.textContent = 'Select a file first.';
+      return;
+    }
+    var file = fileInput.files[0];
+    if (statusEl) statusEl.textContent = 'Uploading...';
+    if (btn) { btn.disabled = true; btn.textContent = 'Uploading...'; }
+    var fd = new FormData();
+    fd.append('file', file);
+    try {
+      var r = await fetch('/api/v1/training/jobs/script-upload', {method: 'POST', body: fd});
+      var j = await r.json();
+      if (j.ok) {
+        if (statusEl) statusEl.innerHTML = 'Uploaded — init container will run <span class="font-mono text-gray-300">' + (j.script || file.name) + '</span> (job ' + (j.job_id || '') + ')';
+        if (btn) { btn.textContent = 'Uploaded'; btn.classList.add('text-green-400'); }
+      } else {
+        if (statusEl) statusEl.textContent = 'Upload failed: ' + (j.error || 'server error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Upload'; }
+      }
+    } catch(e) {
+      if (statusEl) statusEl.textContent = 'Upload failed — check connection.';
+      if (btn) { btn.disabled = false; btn.textContent = 'Upload'; }
+    }
+  };
 })();
 </script>
 {% endblock %}

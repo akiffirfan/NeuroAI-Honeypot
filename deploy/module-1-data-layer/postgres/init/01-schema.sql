@@ -165,7 +165,8 @@ CREATE TABLE attacker_sessions (
     paths_accessed      TEXT[],              -- HTTP paths from FastAPI honeypot
     files_requested     TEXT[],              -- file download URLs from Cowrie
     threat_score        SMALLINT,
-    disposition         TEXT DEFAULT 'active'  -- 'active', 'closed', 'blocked', 'escalated'
+    disposition         TEXT DEFAULT 'active',  -- 'active', 'closed', 'blocked', 'escalated'
+    kill_chain_stage    TEXT                    -- RECON, INITIAL_ACCESS, DISCOVERY, CREDENTIAL_ACCESS, EXECUTION, EXFILTRATION
 );
 
 -- Index for IP-based session lookup (which sessions came from this IP?)

@@ -84,7 +84,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
       # Resolves via honeypot-net (internal: false) default route to reach HoneyDash
-      # on host port 8000. Required for HONEYDASH_URL push. Do not remove honeypot-net
+      # on host port 8090. Required for HONEYDASH_URL push. Do not remove honeypot-net
       # from this service or host.docker.internal resolution will fail.
     ports:
       - "127.0.0.1:8080:8080"   # loopback-only; Nginx proxies /api/, /admin, / to this port
@@ -96,6 +96,8 @@ services:
       - ../../honeypot/api/lure-files/:/app/lure-files/:ro
       # GeoIP databases — read-only; shared volume populated by Module 5
       - geoip-data:/geoip:ro
+      # Malware upload capture — writable; files survive container restarts and are inspectable on host
+      - /opt/honeypot/uploads:/app/uploads
     env_file:
       - .env
     environment:
