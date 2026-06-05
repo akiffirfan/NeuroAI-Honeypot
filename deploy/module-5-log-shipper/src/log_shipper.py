@@ -1469,6 +1469,17 @@ class PostgresWriter:
             self._conn = None
             return self._connect()
 
+    @staticmethod
+    def _clean(obj):
+        """Recursively strip NUL bytes — PostgreSQL text/jsonb columns reject \x00 / \\u0000."""
+        if isinstance(obj, str):
+            return obj.replace('\x00', '')
+        if isinstance(obj, dict):
+            return {k: PostgresWriter._clean(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [PostgresWriter._clean(v) for v in obj]
+        return obj
+
     def write(self, event: dict) -> bool:
         """Write one normalized event to honeypot_events. Returns True on success."""
         if not self._ensure_connected():
@@ -1476,6 +1487,11 @@ class PostgresWriter:
         sensor_type = event.get("_sensor_type", "unknown")
         eventid     = event.get("eventid", "")
         src_ip      = event.get("src_ip", "")
+
+        # src_ip is NOT NULL in schema — drop internal/startup events with no source IP
+        if not src_ip:
+            log.warning("event_dropped_no_src_ip", event_type=eventid, sensor=sensor_type)
+            return True  # True = don't re-spool; these are unfixable malformed events
 
         # Map internal sensor_type to the Postgres 'sensor' column vocabulary
         sensor_col = {
@@ -1495,7 +1511,7 @@ class PostgresWriter:
                    "shares_requested", "ntlm_flags"):
             v = event.get(k)
             if v is not None:
-                payload_fields[k.lstrip("_")] = v
+                payload_fields[k.lstrip("_")] = self._clean(v)
 
         row = {
             "event_id":        str(uuid.uuid4()),
@@ -1512,10 +1528,10 @@ class PostgresWriter:
             "geo_lon":         event.get("geo_lon"),
             "geo_asn":         event.get("geo_asn"),
             "geo_org":         event.get("geo_org"),
-            "username":        event.get("username"),
-            "password":        event.get("password"),
+            "username":        self._clean(event.get("username")),
+            "password":        self._clean(event.get("password")),
             "payload":         json.dumps(payload_fields) if payload_fields else None,
-            "raw_log":         json.dumps(event.get("_raw", {})),
+            "raw_log":         json.dumps(self._clean(event.get("_raw", {}))),
             "session_id":      event.get("session"),
             "threat_score":    _compute_threat_score(eventid, sensor_type),
             "tags":            _compute_tags(eventid, sensor_type),
