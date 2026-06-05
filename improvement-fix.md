@@ -1983,3 +1983,451 @@ sudo nft list chain ip honeypot-dnat prerouting | grep "dport 445"
 ```
 
 **Kill-chain bridge value**: An attacker who discovers `\\NEURO-TRAIN-01\neuro-data-share` via the HTTP cluster API (`/api/v1/cluster/nodes`), submits credentials with `crackmapexec`, and has their NTLMv2 hash captured, represents the most complete cross-surface kill chain the platform can demonstrate: HTTP recon → SSH probe (Cowrie) → SMB credential capture. The `_check_multisensor_kill_chain()` query in sentinel fires automatically when the same `src_ip` appears across `api` + `cowrie` + `smb` sensors within 60 minutes, and the `smb.ntlmv2.hash` event maps to `CREDENTIAL_ACCESS` in the kill chain state machine — advancing the attacker session stage and triggering the stage-transition alert.
+
+---
+
+## Session 8 — Model Poisoning Upload (Pending Gatekeeper Review)
+
+**Recommendation: DO NOT ADD as a separate endpoint. The existing `script-upload` covers the malware capture story completely. A dedicated model file upload endpoint adds marginal deception value that does not justify the duplication.**
+
+### Assessment
+
+**Does the existing `script-upload` endpoint cover the ML malware story?**
+
+Yes, convincingly. The current `POST /api/v1/training/jobs/script-upload` endpoint is surfaced on `/jobs/new` as an init-script submission — a standard pattern in ML orchestration platforms (Weights & Biases, MLflow, Vertex AI all accept startup scripts for training runs). The response returns `"status": "queued"` and `"message": "Init script accepted. Job queued on neuro-train-01."` which is entirely consistent with the AI-training-platform cover story. An attacker planting a malicious init script (e.g., a reverse shell or a cryptominer wrapped in a bash payload) on a training cluster is itself a well-documented, realistic attack vector — not a contrived one. The file is captured to `UPLOAD_DIR`, the `http.upload.malware_received` event fires with no sentinel cooldown, and the payload metadata (filename, MIME type, size, source IP) is all recorded. The story is complete.
+
+**Does a dedicated model poisoning endpoint add meaningful deception value?**
+
+In principle, ML model supply chain poisoning is a real and high-profile threat: the Hugging Face pickling RCE vulnerabilities (2023), the ShadowRay campaign against Ray clusters (2024), and MITRE ATLAS ML-specific TTPs (AML.T0010 — ML Supply Chain Compromise) all confirm that uploading a malicious `.pkl` or `.pt` file to gain code execution on an inference server is a recognized attack path. A `POST /api/v1/models/upload` route positioned as "register your trained model for deployment" would be thematically coherent.
+
+However, the deception value delta over the existing endpoint is near-zero for three reasons:
+
+1. **Same capture mechanism, same event type**: Both endpoints would call `asyncio.to_thread(save_path.write_bytes, content)` and emit `http.upload.malware_received`. The file format (`.pkl` vs `.sh`) does not change what we capture or how we alert. No new sensor type, no new kill-chain branch, no new telemetry field is unlocked.
+
+2. **The `/models` page has no upload affordance today**: `models.html` only shows a table of deployed models with a "Download weights" button. Adding an upload button requires a non-trivial frontend change to a page that already passes the deception vocabulary grep. Adding a file input form, drag-and-drop zone, or modal to `models.html` without it feeling bolted-on requires a full redesign of that page's top-right action area — frontend work that may introduce new deception tells.
+
+3. **Duplication creates a consistency burden**: Two upload endpoints with different cover stories (`init script` vs `model file`) must stay coherent across the fake metrics in `/api/v1/metrics` (Prometheus endpoint at main.py:1194), the `FAKE_JOBS` response, the `FAKE_MODELS` response, and the Cowrie honeyfs. If a Round 31 gatekeeper audit finds that the `/jobs/new` page references `script-upload` but the `/models` page also accepts uploads with no cross-reference between them, the lack of internal cross-linking becomes a staged-data tell. One coherent surface is harder to fingerprint than two parallel ones.
+
+**What about the attack narrative specifically?**
+
+The strongest argument for a model upload endpoint is narrative specificity: an attacker who believes they are inside a real ML platform would think "if I can upload a poisoned `.pkl`, the inference server will deserialize it and execute my payload." This is genuinely more ML-domain-specific than "I uploaded a bash init script." However, this narrative advantage only matters to a sophisticated attacker who: (a) has ML-specific knowledge, and (b) does not stop at the init-script upload because they find it insufficient. In practice, a generic red teamer hitting an unknown target will submit whatever file upload endpoint they find first. The init-script endpoint is already on the most-visited page (`/jobs/new`), discoverable via the sidebar, and is session-gated so it appears legit. A model upload on the `/models` page is deeper in the navigation and less likely to be found by the typical scanner-first attacker this system is designed to capture.
+
+### Verdict
+
+The existing `script-upload` endpoint is sufficient. The model poisoning concept is architecturally sound and threat-realistic, but adding a second upload endpoint creates duplicate capture infrastructure for no new intelligence output. If the platform narrative later evolves to include an explicit model registry with a "Register External Model" workflow (e.g., as part of a `/pipelines` or `/models/import` page), a model upload endpoint could be added then as part of a larger cohesive feature, not as a standalone addition.
+
+**If the gatekeeper disagrees and approves this feature**, the minimal correct implementation is:
+
+- Route: `POST /api/v1/models/register` (not `/upload` — "register" is the MLOps vocabulary word; "upload" sounds like a file host)
+- Accepted extensions: `.pkl`, `.pt`, `.onnx`, `.bin`, `.safetensors` — validate via both extension and content sniff (first 4 bytes); reject anything that doesn't match to avoid generic file-drop abuse
+- Response: `{"model_id": "mdl-<hex8>", "status": "validation_queued", "message": "Model checkpoint accepted. Running safety scan on neuro-train-01 before registry promotion."}`
+- Event type: reuse `http.upload.malware_received` with `"file_category": "model_checkpoint"` in payload — do NOT introduce a new event type (`http.upload.model_poisoning_received` is defender vocabulary)
+- Add to `_LURE_PATHS` and `_NO_COOLDOWN_EVENTS`
+- Frontend: add a single "Register Model" button on `models.html` that opens a file picker restricted to `.pkl,.pt,.onnx,.bin,.safetensors` — no full form redesign needed, just a top-right action button consistent with the page's current "Download weights" affordance
+- MIME-type sniff to capture `.pkl` magic bytes (`\x80\x05`) in payload for forensic value
+- Same disk-fill risk as `script-upload` — the 50MB cap and `UPLOAD_DIR` volume must be shared or independently bounded
+
+---
+
+## Session 9 — Sentinel & Dashboard Coverage Fixes (Pending Gatekeeper Review)
+
+Eight targeted gaps identified by coverage audit. No new sensors or routes. All changes are confined to `sentinel.py`, `log_shipper.py`, and `main.py`.
+
+---
+
+### FIX-A (Critical): Telemetry beacons saturate the shared "http" cooldown bucket — IMPLEMENTED ✓
+
+**Problem.** Every `metrics.js` page-load fires between 5 and 10 telemetry POSTs per session: page_view, field_interaction, canvas/WebRTC beacons, dwell-time on pagehide. Each resolves to event_type `http.post.api.v1.telemetry` or `http.get.api.v1.telemetry`. Both fall into the generic `"http"` cooldown category inside `_should_alert()` (line 268 of `sentinel.py`: `elif event_type.startswith("http."): cooldown_category = "http"`). The first telemetry beacon from an IP sets the 60-second cooldown. Any SQLi, SSRF, DevTools, or lure-credential event that fires within that 60-second window is silently suppressed — `_suppressed(src_ip, "http")` returns True and `send_alert()` is never called. This is the highest-severity silent-alert failure in the current system.
+
+**File:** `deploy/module-5-log-shipper/src/sentinel.py`
+
+**Change 1 — Add telemetry event types to `_NOISE_EVENTS` (line 68–70).**
+
+Current `_NOISE_EVENTS` (lines 68–70):
+```python
+_NOISE_EVENTS = {"http.get.health", "cowrie.session.closed", "api.startup",
+                 "cowrie.session.connect", "smtp.session.connect", "smtp.ehlo",
+                 "smb.server.started"}
+```
+
+Replace with:
+```python
+_NOISE_EVENTS = {"http.get.health", "cowrie.session.closed", "api.startup",
+                 "cowrie.session.connect", "smtp.session.connect", "smtp.ehlo",
+                 "smb.server.started",
+                 "http.post.api.v1.telemetry",   # metrics.js beacons — not attacker actions
+                 "http.get.api.v1.telemetry"}     # same, GET variant
+```
+
+**Change 2 — Add `http.telemetry.devtools_opened` to `_NO_COOLDOWN_EVENTS` (lines 73–82).**
+
+DevTools detection beacons fired by `metrics.js` use event_type `http.post.api.v1.telemetry` with `payload.type = "devtools_panel_open"` or `"dev_tools_key"`. Once the parent event type is in `_NOISE_EVENTS`, these are suppressed at the noise filter before `_build_reason()` runs. The devtools signal is high-value (human attacker confirmation) — it must not be silenced.
+
+Two-step fix: (a) `metrics.js` should send devtools events as a distinct event_type `http.telemetry.devtools_opened` rather than the generic telemetry path; (b) sentinel adds that type to `_NO_COOLDOWN_EVENTS`.
+
+For the sentinel side, add to `_NO_COOLDOWN_EVENTS` (after line 81):
+```python
+    "http.telemetry.devtools_opened",  # human attacker: F12/side-panel — always alert
+```
+
+Note: the `main.py` middleware derives `event_type` from the URL path as `f"http.{method.lower()}.{path_cat}"`. The telemetry endpoint is at `/api/v1/telemetry` so all beacons produce `http.post.api.v1.telemetry` regardless of the `type` field in the body. To emit the distinct `http.telemetry.devtools_opened` type, the `/api/v1/telemetry` handler in `main.py` must inspect `body.type` and, when it equals `"devtools_panel_open"` or `"dev_tools_key"`, call `_log_event()` directly with `event_type = "http.telemetry.devtools_opened"` before the middleware logs it as the generic type. The middleware log is acceptable to leave as noise; the explicit `_log_event()` call produces the actionable record. This requires a matching change to `main.py` (see Change 3 below).
+
+**Change 3 — `main.py`: distinguish devtools beacons from generic telemetry.**
+
+File: `deploy/module-6-honeypot-api/src/main.py`
+
+Locate the telemetry endpoint (currently a thin handler that returns `{"ok": True}`). Add body inspection before the return:
+
+```python
+# After reading body_json from request:
+beacon_type = body_json.get("type", "")
+if beacon_type in ("devtools_panel_open", "dev_tools_key"):
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.telemetry.devtools_opened",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({"beacon_type": beacon_type, "key": body_json.get("key")}),
+        "raw_log": None,
+        "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+```
+
+Also add a `_build_reason()` branch in `sentinel.py` for `http.telemetry.devtools_opened` (insert after the `http.prompt.injection` branch at line 116):
+```python
+if event_type == "http.telemetry.devtools_opened":
+    key = payload.get("key") or ""
+    return f"DevTools opened — key={key or 'side-panel'} — POSSIBLE HUMAN ATTACKER"
+```
+
+And a `_build_message()` header branch (after the `http.prompt.injection` header at line 324):
+```python
+elif event_type == "http.telemetry.devtools_opened":
+    header = "👁️ <b>DEVTOOLS OPENED — HUMAN ATTACKER SIGNAL</b>"
+```
+
+**Expected result after fix.** Telemetry beacon floods no longer consume the `"http"` cooldown bucket. A scanner that triggers SQLi on the same request as a telemetry beacon will still fire the SQLi alert. DevTools events continue to alert immediately, bypassing all cooldown suppression.
+
+---
+
+### FIX-B (Medium): security.* events produce bare event_type strings in Telegram — IMPLEMENTED ✓
+
+**Problem.** `security.mfa_toggle_attempt`, `security.session_revoke_attempt`, `security.allowlist_probe`, `security.key_rotation_attempt`, and `security.audit_log_viewed` all pass `_NOISE_EVENTS` and reach `send_alert()`. However `_build_reason()` has no branch for `security.*` event types — they fall through to the final `return event_type` at line 201. The Telegram alert body reads `"Reason: security.mfa_toggle_attempt"` with no attacker-captured data. For MFA toggle specifically, the submitted password (`row["password"]`) — the highest-value field — is never shown.
+
+Additionally, all five event types currently assign `cooldown_category = event_type` (they don't start with `http.`, aren't in `_SNARE_CATEGORIES`, and aren't `cowrie.login.failed`). This means each fires independently per IP, which is correct behaviour. However, they are not grouped into a shared `"web.security"` bucket — if an attacker spams all five endpoints from the same IP, they can generate 5 separate cooldown windows independently. Adding them to `_SNARE_CATEGORIES` with `"web.security"` normalises this.
+
+**File:** `deploy/module-5-log-shipper/src/sentinel.py`
+
+**Change 1 — Add `security.*` branch to `_build_reason()` (insert before the final fallback at line 200).**
+
+```python
+if event_type.startswith("security."):
+    action_map = {
+        "security.mfa_toggle_attempt":    "MFA disable attempt",
+        "security.session_revoke_attempt": "Session revocation attempt",
+        "security.allowlist_probe":        "IP allowlist submission",
+        "security.key_rotation_attempt":   "API key rotation triggered",
+        "security.audit_log_viewed":       "Audit log accessed",
+    }
+    action = action_map.get(event_type, event_type)
+    cidr = payload.get("cidr") or ""
+    label = payload.get("label") or ""
+    action_rotate = payload.get("action") or ""
+    pw_fragment = f" | password={'*' * min(len(password), 3)}{password[-2:] if len(password) >= 2 else ''}" if password else ""
+    extra = ""
+    if cidr:
+        extra = f" | cidr={cidr}"
+    elif label:
+        extra = f" | label={label}"
+    elif action_rotate:
+        extra = f" | action={action_rotate}"
+    return f"{action}{pw_fragment}{extra} — path={path or event_type}"
+```
+
+**Change 2 — Add entries to `_SNARE_CATEGORIES` (inside the dict at lines 243–265, after the existing `"http.bruteforce.detected"` entry at line 255).**
+
+```python
+        "security.mfa_toggle_attempt":    "web.security",
+        "security.session_revoke_attempt": "web.security",
+        "security.allowlist_probe":        "web.security",
+        "security.key_rotation_attempt":   "web.security",
+        "security.audit_log_viewed":       "web.security",
+```
+
+**Change 3 — Add a `_build_message()` header for security events (insert after the `smb.` fallback at line 342).**
+
+```python
+elif event_type.startswith("security."):
+    header = "🔐 <b>SECURITY PAGE ACTION</b>"
+```
+
+**Expected result after fix.** A Telegram alert for `security.mfa_toggle_attempt` will show `"Reason: MFA disable attempt | password=Ne*ro — path=/api/v1/security/mfa/toggle"` instead of the bare event_type. All five security event types share the `"web.security"` cooldown bucket per IP, so repeated probing of multiple security endpoints from the same IP fires one alert per 60-second window rather than five independent ones.
+
+---
+
+### FIX-C (Medium): Forgot-password email not captured in username column — IMPLEMENTED ✓
+
+**Problem.** `POST /auth/forgot-password` (handler `forgot_password()` at line 1799 of `main.py`) reads no body — it immediately calls `_jitter()` and returns the JSON success message. The submitted email address is never extracted and never written to `honeypot_events.username`. The middleware does log an `http.post.auth.forgot-password` event, but `username` is NULL because `/auth/forgot-password` is not in `_LOGIN_PATHS` (line 205: `_LOGIN_PATHS = {"/api/v1/auth", "/admin/login", "/auth/login"}`), so the middleware's login-body extraction block (lines 543–560) is skipped.
+
+The email field is the primary attacker-identifying artifact from this endpoint. An attacker using their own email for password recovery is an attribution opportunity that the current code silently discards.
+
+**File:** `deploy/module-6-honeypot-api/src/main.py`
+
+**Option A (preferred) — Explicit `_log_event()` call inside `forgot_password()`.**
+
+Replace the current handler body (lines 1799–1805):
+
+```python
+# BEFORE:
+async def forgot_password(request: Request):
+    """Captures attacker email — always returns fake success."""
+    await _jitter()
+    return JSONResponse(content={
+        "message": "If that email is registered, you'll receive a link within 5 minutes. "
+                   "Check #ai-infra on Slack.",
+    })
+```
+
+```python
+# AFTER:
+async def forgot_password(request: Request):
+    """Captures attacker email — always returns fake success."""
+    await _jitter()
+    src_ip = _extract_src_ip(request)
+    submitted_email: str | None = None
+    try:
+        body = await request.json()
+        submitted_email = str(body.get("email") or body.get("username") or "")[:256] or None
+    except Exception:
+        pass
+    if submitted_email:
+        _log_event({
+            "event_id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "sensor": "api",
+            "event_type": "http.lure.forgot_password",
+            "src_ip": src_ip,
+            "src_port": request.client.port if request.client else None,
+            "dst_port": 8080,
+            "username": submitted_email,
+            "password": None,
+            "payload": json.dumps({"submitted_email": submitted_email, "path": "/auth/forgot-password"}),
+            "raw_log": None,
+            "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+            **_lookup_geo(src_ip),
+        })
+    return JSONResponse(content={
+        "message": "If that email is registered, you'll receive a link within 5 minutes. "
+                   "Check #ai-infra on Slack.",
+    })
+```
+
+Using `event_type = "http.lure.forgot_password"` rather than the middleware-derived `http.post.auth.forgot-password` prevents the duplicate-event problem (middleware will still fire its generic event; the explicit call produces a distinct high-value record).
+
+**Option B (alternative) — Add `/api/v1/auth/forgot-password` to `_LOGIN_PATHS` at line 205.**
+
+This causes the middleware to extract `email`/`username` from the POST body automatically. It works only if the frontend POSTs to `/api/v1/auth/forgot-password` (the API path). The current route is at `/auth/forgot-password` (the UI path). If both paths are used by the template, both would need to be added. Option A is preferred because it also sets a distinct event_type, making the record easier to query and sentinel-match.
+
+**Sentinel side — no change required.** `http.lure.forgot_password` will fall through `_build_reason()` to the `http.` fallback: `"Web probe: POST /auth/forgot-password (user=<email>)"` — the email appears in the `username` field shown at the bottom of the Telegram message body. If a more specific reason string is desired, add a branch to `_build_reason()`:
+```python
+if event_type == "http.lure.forgot_password":
+    return f"Password reset requested for: {username or '(no email submitted)'}"
+```
+
+**Expected result after fix.** Every POST to `/auth/forgot-password` with a non-empty email body produces a `honeypot_events` row where `username = <submitted_email>`. The Telegram alert shows the submitted email. Sentinel's credential replay check (`_check_credential_replay()`) picks up the username for cross-sensor correlation.
+
+---
+
+### FIX-D (Medium): HoneyDash attack_type labels are auto-generated ugly strings — IMPLEMENTED ✓
+
+**Problem.** In HoneyDash's `log_collector.py` at line 204: `attack_type = EVENTID_TO_ATTACK_TYPE.get(eid) or data.get("attack_type") or eid.replace(".", " ").title() or "Remote Honeypot Event"`. When `_push_honeydash_async()` is called with `attack_type="Lure Credential"`, that string is passed directly and HoneyDash stores it. But when the middleware-logged generic events flow through `log_shipper.py`'s `_add_to_honeydash_batch()` path (non-SNARE HTTP events), `attack_type` is not set in the event dict, so HoneyDash's fallback produces `eid.replace(".", " ").title()` — yielding labels like `"Http Post Api V1 Telemetry"`, `"Http Lure Credential Success"`, `"Security Mfa Toggle Attempt"`. These appear in the HoneyDash dashboard UI event table and session cards.
+
+**File:** `deploy/module-5-log-shipper/src/log_shipper.py`
+
+**Change — Add `_HD_ATTACK_TYPE` mapping dict above `_honeydash_event()` definition (line 1684), and apply it inside `_honeydash_event()`.**
+
+Insert after the `_HD_SENSOR_NAME` block (after line 1674):
+```python
+# Clean attack_type labels for the HoneyDash event table.
+# HoneyDash fallback is eid.replace(".", " ").title() which produces ugly strings.
+# This dict is consulted first; unrecognised event types keep the fallback.
+_HD_ATTACK_TYPE: dict[str, str] = {
+    # SSH / Cowrie
+    "cowrie.login.failed":          "SSH Brute Force",
+    "cowrie.login.success":         "SSH Login",
+    "cowrie.command.input":         "Command Execution",
+    "cowrie.session.file_download": "Malware Download",
+    "cowrie.session.connect":       "SSH Connect",
+    # OpenCanary / MariaDB
+    "opencanary.ftp.login":         "FTP Brute Force",
+    "opencanary.telnet.login":      "Telnet Attack",
+    "opencanary.redis.command":     "Redis Probe",
+    "mariadb.connect":              "MySQL Brute Force",
+    "mariadb.query":                "MySQL Query",
+    # HTTP SNARE
+    "http.sqli.attempt":            "SQL Injection",
+    "http.post.sqli.attempt":       "SQL Injection",
+    "http.lfi.attempt":             "LFI Attempt",
+    "http.get.lfi.attempt":         "LFI Attempt",
+    "http.rce.attempt":             "RCE Attempt",
+    "http.post.rce.attempt":        "RCE Attempt",
+    "http.cmdi.attempt":            "Command Injection",
+    "http.xss.attempt":             "XSS Attempt",
+    "http.get.xss.attempt":         "XSS Attempt",
+    "http.snare.ssrf_attempt":      "SSRF Attempt",
+    "http.bruteforce.detected":     "HTTP Brute Force",
+    "http.prompt.injection":        "Prompt Injection",
+    # Lure / canary
+    "http.lure.credential.success": "Lure Credential Used",
+    "http.lure.data_exfil":         "Data Exfiltration",
+    "http.canarytoken.fired":       "Canarytoken Triggered",
+    "http.upload.malware_received": "Malware Upload",
+    "http.lure.forgot_password":    "Password Reset Probe",
+    # Security page
+    "security.mfa_toggle_attempt":     "MFA Disable Attempt",
+    "security.session_revoke_attempt": "Session Revocation",
+    "security.allowlist_probe":        "IP Allowlist Edit",
+    "security.key_rotation_attempt":   "Key Rotation",
+    "security.audit_log_viewed":       "Audit Log Access",
+    # Cross-sensor
+    "cross_sensor.credential_relay": "Credential Relay (SSH→DB)",
+    # SMB
+    "smb.ntlmv2.hash":    "NTLMv2 Hash Captured",
+    "smb.auth.attempt":   "SMB Auth Attempt",
+    "smb.enum.shares":    "SMB Share Enumeration",
+    "smb.file.read":      "SMB File Read",
+    "smb.file.write":     "SMB File Write",
+    "smb.connect":        "SMB Connect",
+}
+```
+
+Inside `_honeydash_event()`, after the sensor remap at line 1711:
+```python
+# Apply clean attack_type label if not already set by caller
+if "attack_type" not in out or not out["attack_type"]:
+    event_type = out.get("eventid") or out.get("_event_type") or ""
+    out["attack_type"] = _HD_ATTACK_TYPE.get(event_type, event_type.replace(".", " ").title())
+```
+
+Note: events pushed via `_push_honeydash_async()` in `main.py` already set `attack_type` explicitly — those values take precedence because they arrive with `attack_type` set in the dict. This change only fills in the gap for events flowing through the `_add_to_honeydash_batch()` path from `log_shipper.py`.
+
+**Expected result after fix.** HoneyDash event table shows `"SQL Injection"`, `"Lure Credential Used"`, `"MFA Disable Attempt"` instead of `"Http Post Sqli Attempt"`, `"Http Lure Credential Success"`, `"Security Mfa Toggle Attempt"`.
+
+---
+
+### FIX-E (Medium): command_input is NULL for HTTP SNARE events in HoneyDash — IMPLEMENTED ✓
+
+**Problem.** HoneyDash's `log_collector.py` at line 282 populates `command_input = data.get("input") or data.get("command_input") or data.get("command")`. The field name it reads is `"input"`. In `_push_honeydash_async()` (line 1013 of `main.py`), the event dict is built with `"body_preview": payload_dict.get("body_preview")` — there is no `"input"` key. HoneyDash never sees the attack payload (the SQLi string, the RCE command, the SSRF URL) in `command_input`. This column is NULL for all HTTP SNARE events.
+
+The `command_input` column is shown in the HoneyDash session detail view, the events table, and the reports CSV export. A NULL value there for `"SQL Injection"` attack_type is a visible data-quality gap.
+
+**File:** `deploy/module-6-honeypot-api/src/main.py`
+
+**Change — Add `"input"` field to the `honeydash_event` dict in `_push_honeydash_async()` for SNARE-category events.**
+
+In `_push_honeydash_async()` (lines 992–1014), after building `honeydash_event`, add:
+
+```python
+# Populate HoneyDash command_input field for SNARE attack types.
+# HoneyDash reads data.get("input") → Event.command_input column.
+_SNARE_ATTACK_TYPES = {
+    "RCE Attempt", "SQL Injection", "LFI Attempt",
+    "Command Injection", "XSS Attempt", "SSRF Attempt",
+    "Prompt Injection",
+}
+if attack_type in _SNARE_ATTACK_TYPES:
+    honeydash_event["input"] = (
+        payload_dict.get("body_preview")
+        or payload_dict.get("query_params", {}).get("path")
+        or payload_dict.get("path")
+    )
+```
+
+Place this block between line 1013 (`"body_preview": payload_dict.get("body_preview"),`) and line 1016 (`async with httpx.AsyncClient...`). The `_SNARE_ATTACK_TYPES` set should be defined at module level (near `_SNARE_CATEGORIES`) rather than inside the async function to avoid re-creation on every call.
+
+**Expected result after fix.** For a `"SQL Injection"` SNARE event where `body_preview = "' OR 1=1 --"`, HoneyDash stores `command_input = "' OR 1=1 --"`. The session detail view and reports CSV export show the attack payload. HoneyDash's full-text search (which includes `command_input`) now returns HTTP SNARE events when searching for payload strings.
+
+---
+
+### FIX-F (Minor): Non-SSRF webhook test hits generic "http" bucket — IMPLEMENTED ✓
+
+**Problem.** `POST /api/v1/integrations/webhook/test` with a non-SSRF target URL (e.g., `https://hooks.slack.com/services/valid/slack/url`) logs `event_type = http.post.api.v1.integrations.webhook.test` and falls into the generic `"http"` cooldown category. This event is fired by an attacker legitimately exploring the Integrations page — they aren't triggering SSRF — but the event is indistinguishable from scanner noise in the cooldown logic. If they also trigger a legitimate telemetry beacon within the same 60-second window, the webhook-test event is suppressed.
+
+**File:** `deploy/module-5-log-shipper/src/sentinel.py`
+
+**Change — Add `"http.post.api.v1.integrations.webhook.test"` to `_SNARE_CATEGORIES` with a distinct `"web.webhook"` bucket (inside the `_SNARE_CATEGORIES` dict at lines 243–265).**
+
+```python
+        "http.post.api.v1.integrations.webhook.test": "web.webhook",
+```
+
+This gives the webhook-test event its own independent cooldown bucket per IP, separate from the generic `"http"` bucket. It will no longer be suppressed by prior telemetry beacons, and it won't suppress subsequent SQLi or lure-path alerts.
+
+No `_build_reason()` change needed — the existing `http.` fallback produces `"Web probe: POST /api/v1/integrations/webhook/test"` which is adequately descriptive. The attacker's submitted URL is visible in `payload.webhook_url` which appears in the Telegram body as part of the full event payload dump.
+
+**Expected result after fix.** A webhook-test event always fires its own Telegram alert (subject to its own 60-second per-IP `"web.webhook"` cooldown). Subsequent SQLi or lure-path events from the same IP within 60 seconds are not suppressed by this event.
+
+---
+
+### FIX-G (Minor): download_url NULL for lure file downloads in HoneyDash — IMPLEMENTED ✓
+
+**Problem.** `http.lure.data_exfil` events are pushed via `_push_honeydash_async(event, "Data Exfil")` (line 647 of `main.py`). The `honeydash_event` dict built in `_push_honeydash_async()` at lines 992–1014 does not include a `"download_url"` or `"url"` key. HoneyDash's `log_collector.py` at line 283 reads `download_url = data.get("url") or data.get("download_url")`. Both keys are absent — `Event.download_url` is NULL for every lure file download.
+
+The filename of the downloaded lure file is available in the `event["payload"]` JSON under the `"file"` key (set by `data_export_download()` in `main.py` via the `X-Lure-Data-Exfil` middleware path). It can also be recovered from the `"path"` query param extracted by the middleware.
+
+**File:** `deploy/module-6-honeypot-api/src/main.py`
+
+**Change — Populate `"download_url"` field in `_push_honeydash_async()` for `"Data Exfil"` attack_type.**
+
+In `_push_honeydash_async()`, after building `honeydash_event` (at the same location as the FIX-E `"input"` addition, i.e., after line 1013), add:
+
+```python
+if attack_type == "Data Exfil":
+    dl_file = (
+        payload_dict.get("file")
+        or payload_dict.get("query_params", {}).get("file")
+        or payload_dict.get("path")
+    )
+    if dl_file:
+        honeydash_event["download_url"] = f"/api/v1/data/exports/download?file={dl_file}"
+```
+
+The value is a relative URL path string — HoneyDash stores it as-is in `Event.download_url` (String column, no URL validation). It will be visible in the session detail view, the events table `download_url` column, and the reports CSV export.
+
+**Expected result after fix.** A lure file download event in HoneyDash shows `download_url = "/api/v1/data/exports/download?file=workspace-export-2026-05-31.csv"` (or whichever filename was requested). HoneyDash's full-text search on `download_url` returns these events. The session malware tab (which filters on `download_url IS NOT NULL`) begins populating for HTTP lure downloads.
+
+---
+
+### FIX-H (Minor): NTLMv2 hash not visible in HoneyDash credential view — IMPLEMENTED ✓
+
+**Problem.** In `SmbTailer._normalize()` at line 1218 of `log_shipper.py`, the `password` field is explicitly set to `None`: `"password": None, # NTLM hash goes in payload, never in password column`. The comment was correct as originally written — NTLMv2 hashes are not plaintext passwords and look wrong in a password field. However, HoneyDash's session credential view and session detail overlay query `Event.password` to display captured credentials. Because `password = None`, NTLMv2 hashes are invisible in every HoneyDash credential view even though they are the highest-value SMB capture artifact.
+
+The NTLMv2 hash string is stored in `payload_fields["ntlmv2_hash"]` and reaches PostgreSQL's `payload` JSONB column correctly. It is visible in the Telegram alert via `_build_reason()` and in raw SQL queries. The gap is specifically the HoneyDash credential UI.
+
+**File:** `deploy/module-5-log-shipper/src/log_shipper.py`
+
+**Change — Populate `password` field with the NTLMv2 hash string for `smb.ntlmv2.hash` events in `SmbTailer._normalize()` (lines 1209–1226).**
+
+Change line 1218 from:
+```python
+"password": None,    # NTLM hash goes in payload, never in password column
+```
+to:
+```python
+"password": raw.get("ntlmv2_hash") or None,   # NTLMv2: populate password col for HoneyDash cred view
+```
+
+Additionally, keep the hash in `payload_fields` (no removal) so it remains in the `payload` JSONB column for forensic queries and sentinel alerting. Both columns will contain the hash — this is intentional duplication for UI accessibility.
+
+Update the inline comment at line 1201 to reflect the change:
+```python
+# ntlmv2_hash is stored in both payload (forensic) and password column (HoneyDash cred view)
+```
+
+**Expected result after fix.** HoneyDash session detail view for SMB sessions shows the NTLMv2 hash in the credentials field alongside the username and domain. The hash remains in `payload` JSONB for sentinel's `_build_reason()` path (which reads `payload.ntlmv2_hash` directly) — no sentinel change required.

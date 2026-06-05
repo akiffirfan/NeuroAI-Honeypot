@@ -1198,7 +1198,7 @@ class SmbTailer:
         geo      = enrich_geoip(src_ip)
 
         # Build payload dict from SMB-specific fields
-        # ntlmv2_hash is the highest-value field; kept in payload not password column
+        # ntlmv2_hash is stored in both payload (forensic) and password column (HoneyDash cred view)
         payload_fields = {}
         for key in ("ntlmv2_hash", "domain", "pipe_name", "path",
                     "file_name", "shares_requested", "ntlm_flags"):
@@ -1215,7 +1215,7 @@ class SmbTailer:
             "sensor":       "smb",
             "dst_port":     raw.get("dst_port", 445),
             "username":     raw.get("username"),
-            "password":     None,    # NTLM hash goes in payload, never in password column
+            "password":     raw.get("ntlmv2_hash") or None,   # NTLMv2: populate password col for HoneyDash cred view
             "_sensor_type": "smb",
             "_protocol":    "smb",
             "_raw":         raw,
@@ -1673,6 +1673,56 @@ _HD_SENSOR_NAME = {
     "smb":                  "remote",   # Module 8 — SMB events mapped to "remote" for HoneyDash
 }
 
+# Clean attack_type labels for the HoneyDash event table.
+# HoneyDash fallback is eid.replace(".", " ").title() which produces ugly strings.
+# Cowrie/dionaea entries are intentionally OMITTED — HoneyDash's native EVENTID_TO_ATTACK_TYPE
+# already maps those with priority-1 and wins over this dict.
+# Only event types NOT in HoneyDash's native map are listed here.
+_HD_ATTACK_TYPE: dict = {
+    # OpenCanary / MariaDB (not in HoneyDash native map)
+    "opencanary.ftp.login":      "FTP Brute Force",
+    "opencanary.telnet.login":   "Telnet Attack",
+    "opencanary.redis.command":  "Redis Probe",
+    "mariadb.connect":           "MySQL Brute Force",
+    "mariadb.query":             "MySQL Query",
+    # HTTP SNARE
+    "http.sqli.attempt":            "SQL Injection",
+    "http.post.sqli.attempt":       "SQL Injection",
+    "http.lfi.attempt":             "LFI Attempt",
+    "http.get.lfi.attempt":         "LFI Attempt",
+    "http.rce.attempt":             "RCE Attempt",
+    "http.post.rce.attempt":        "RCE Attempt",
+    "http.cmdi.attempt":            "Command Injection",
+    "http.ssrf.attempt":            "SSRF Attempt",
+    "http.xss.attempt":             "XSS Attempt",
+    "http.get.xss.attempt":         "XSS Attempt",
+    "http.snare.ssrf_attempt":      "SSRF Attempt",
+    "http.bruteforce.detected":     "HTTP Brute Force",
+    "http.prompt.injection":        "Prompt Injection",
+    # Lure / canary
+    "http.lure.credential.success": "Lure Credential Used",
+    "http.lure.data_exfil":         "Data Exfiltration",
+    "http.canarytoken.fired":       "Canarytoken Triggered",
+    "http.upload.malware_received": "Malware Upload",
+    "http.lure.forgot_password":    "Password Reset Probe",
+    "http.telemetry.devtools_opened": "DevTools Detected",
+    # Security page
+    "security.mfa_toggle_attempt":     "MFA Disable Attempt",
+    "security.session_revoke_attempt": "Session Revocation",
+    "security.allowlist_probe":        "IP Allowlist Edit",
+    "security.key_rotation_attempt":   "Key Rotation",
+    "security.audit_log_viewed":       "Audit Log Access",
+    # Cross-sensor
+    "cross_sensor.credential_relay": "Credential Relay (SSH->DB)",
+    # SMB
+    "smb.ntlmv2.hash":    "NTLMv2 Hash Captured",
+    "smb.auth.attempt":   "SMB Auth Attempt",
+    "smb.enum.shares":    "SMB Share Enumeration",
+    "smb.file.read":      "SMB File Read",
+    "smb.file.write":     "SMB File Write",
+    "smb.connect":        "SMB Connect",
+}
+
 # Internal Docker healthcheck and session bookkeeping — not real attacker events
 _HD_NOISE_EVENTS = {
     "http.get.health",
@@ -1709,6 +1759,14 @@ def _honeydash_event(event: dict) -> dict | None:
     # Remap sensor names
     sensor = out.get("sensor", "")
     out["sensor"] = _HD_SENSOR_NAME.get(sensor, sensor)
+
+    # Apply clean attack_type label if not already set by caller (FIX-D)
+    if "attack_type" not in out or not out.get("attack_type"):
+        event_type_key = out.get("eventid") or ""
+        out["attack_type"] = _HD_ATTACK_TYPE.get(
+            event_type_key,
+            event_type_key.replace(".", " ").title()
+        )
 
     return out
 

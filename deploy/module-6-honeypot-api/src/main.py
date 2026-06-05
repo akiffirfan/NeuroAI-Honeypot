@@ -707,6 +707,25 @@ _SNARE_EVENT_TYPES = {
     "http.get.xss.attempt",
 }
 
+# Attack type labels for which HoneyDash command_input should be populated from
+# the request body preview or query path. These match the attack_type strings
+# passed to _push_honeydash_async() — not event_type strings.
+# "Command Injection" and "Prompt Injection" are included for completeness but
+# _detect_web_attack() never returns them (returns "RCE Attempt" for cmdi).
+_SNARE_ATTACK_TYPES_FOR_INPUT = {
+    "RCE Attempt",
+    "SQL Injection",
+    "LFI Attempt",
+    "XSS Attempt",
+    "SSRF Attempt",
+    "Command Injection",
+    "Prompt Injection",
+    "MFA Disable",
+    "Session Revoke",
+    "Allowlist Probe",
+    "Key Rotation",
+}
+
 # SQLi payload patterns (query string + body).
 # Rules for inclusion: patterns must carry strong SQL context so they do not
 # false-positive on benign paths like ?path=models/llama3 or hex values in
@@ -1012,6 +1031,26 @@ async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None
             "user_agent": payload_dict.get("user_agent"),
             "body_preview": payload_dict.get("body_preview"),
         }
+
+        # FIX-E: Populate HoneyDash command_input for SNARE/security attack types.
+        # HoneyDash reads data.get("input") → Event.command_input column.
+        if attack_type in _SNARE_ATTACK_TYPES_FOR_INPUT:
+            honeydash_event["input"] = (
+                payload_dict.get("body_preview")
+                or payload_dict.get("query_params", {}).get("path")
+                or payload_dict.get("path")
+            )
+
+        # FIX-G: Populate HoneyDash download_url for lure file downloads.
+        # HoneyDash reads data.get("url") or data.get("download_url") → Event.download_url.
+        if attack_type == "Data Exfil":
+            dl_file = (
+                payload_dict.get("file")
+                or (payload_dict.get("query_params") or {}).get("file")
+                or payload_dict.get("path")
+            )
+            if dl_file:
+                honeydash_event["download_url"] = f"/api/v1/data/exports/download?file={dl_file}"
 
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.post(
@@ -1415,7 +1454,44 @@ async def inference(request: Request):
 @app.get("/api/v1/telemetry")
 @app.post("/api/v1/telemetry")
 async def telemetry(request: Request):
-    """Receives client-side fingerprint beacons from metrics.js."""
+    """Receives client-side fingerprint beacons from metrics.js.
+
+    Generic beacons (page_view, field_interaction, canvas/WebRTC, dwell) are
+    logged only via middleware as http.post.api.v1.telemetry — that event type
+    is in sentinel's _NOISE_EVENTS so it never saturates the "http" cooldown bucket.
+
+    DevTools beacons (type='dev_tools_open') are emitted as a DISTINCT event type
+    http.telemetry.devtools_opened so sentinel always fires an alert for them
+    regardless of the http cooldown window (they are also in _NO_COOLDOWN_EVENTS).
+    """
+    body_json: dict = {}
+    try:
+        body_bytes = await request.body()
+        if body_bytes:
+            body_json = json.loads(body_bytes)
+    except Exception:
+        pass
+
+    beacon_type = body_json.get("type", "")
+    if beacon_type == "dev_tools_open":
+        src_ip = _extract_src_ip(request)
+        method_used = body_json.get("method") or ""
+        asyncio.create_task(_log_event_async({
+            "event_id":   str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "sensor":     "api",
+            "event_type": "http.telemetry.devtools_opened",
+            "src_ip":     src_ip,
+            "src_port":   request.client.port if request.client else None,
+            "dst_port":   8080,
+            "username":   None,
+            "password":   None,
+            "payload":    json.dumps({"beacon_type": beacon_type, "method": method_used}),
+            "raw_log":    None,
+            "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+            **_lookup_geo(src_ip),
+        }))
+
     return Response(status_code=204)
 
 
@@ -1797,8 +1873,37 @@ async def sso_initiate(request: Request):
 @app.get("/auth/forgot-password")
 @app.post("/auth/forgot-password")
 async def forgot_password(request: Request):
-    """Captures attacker email — always returns fake success."""
+    """Captures attacker email — always returns fake success.
+
+    Middleware already caches the body via request._receive so our json() call
+    here re-reads from the buffer without hanging or consuming the stream.
+    Emits a distinct http.lure.forgot_password event so sentinel and HoneyDash
+    can query it separately from the generic middleware event.
+    """
     await _jitter()
+    src_ip = _extract_src_ip(request)
+    submitted_email: str | None = None
+    try:
+        body = await request.json()
+        submitted_email = str(body.get("email") or body.get("username") or "")[:256] or None
+    except Exception:
+        pass
+    if submitted_email:
+        asyncio.create_task(_log_event_async({
+            "event_id":   str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "sensor":     "api",
+            "event_type": "http.lure.forgot_password",
+            "src_ip":     src_ip,
+            "src_port":   request.client.port if request.client else None,
+            "dst_port":   8080,
+            "username":   submitted_email,
+            "password":   None,
+            "payload":    json.dumps({"submitted_email": submitted_email, "path": "/auth/forgot-password"}),
+            "raw_log":    None,
+            "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+            **_lookup_geo(src_ip),
+        }))
     return JSONResponse(content={
         "message": "If that email is registered, you'll receive a link within 5 minutes. "
                    "Check #ai-infra on Slack.",
@@ -2706,7 +2811,7 @@ async def security_keys_rotate(request: Request):
         "new_prefix": "nro-",
         "sample_key": f"nro-{sample_suffix}",
         "effective_at": "2026-06-05T00:00:00Z",
-        "note": "Old keys invalidated. Update CI/CD pipelines and Cowrie automation scripts.",
+        "note": "Old keys invalidated. Update CI/CD pipelines and training-node automation scripts.",
     })
 
 

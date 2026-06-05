@@ -67,7 +67,9 @@ def _suppressed(src_ip: str, category: str) -> bool:
 # ---------------------------------------------------------------------------
 _NOISE_EVENTS = {"http.get.health", "cowrie.session.closed", "api.startup",
                  "cowrie.session.connect", "smtp.session.connect", "smtp.ehlo",
-                 "smb.server.started"}     # Module 8 startup sentinel — not an attacker action
+                 "smb.server.started",              # Module 8 startup sentinel — not an attacker action
+                 "http.post.api.v1.telemetry",      # metrics.js beacons — not attacker actions
+                 "http.get.api.v1.telemetry"}       # same, GET variant
 
 # Events that always alert — no cooldown suppression regardless of (IP, category)
 _NO_COOLDOWN_EVENTS = {
@@ -79,6 +81,7 @@ _NO_COOLDOWN_EVENTS = {
     "http.canarytoken.fired",           # out-of-band canarytoken hit — always alert
     "cross_sensor.credential_relay",    # SSH config.yaml read → MariaDB connect — always alert
     "smb.ntlmv2.hash",                  # NTLMv2 hash capture — highest-value SMB event, always alert
+    "http.telemetry.devtools_opened",   # human attacker: F12/side-panel — always alert
 }
 
 
@@ -197,6 +200,38 @@ def _build_reason(event_type: str, row: dict, payload: dict) -> str:
         return f"SMB connection probe from {(row.get('src_ip') or '').split('/')[0]}"
     if event_type.startswith("smb."):
         return f"SMB probe: {event_type}"
+    # Security page actions (FIX-B)
+    if event_type.startswith("security."):
+        action_map = {
+            "security.mfa_toggle_attempt":     "MFA disable attempt",
+            "security.session_revoke_attempt": "Session revocation attempt",
+            "security.allowlist_probe":        "IP allowlist submission",
+            "security.key_rotation_attempt":   "API key rotation triggered",
+            "security.audit_log_viewed":       "Audit log accessed",
+        }
+        action = action_map.get(event_type, event_type)
+        cidr         = payload.get("cidr") or ""
+        label_str    = payload.get("label") or ""
+        action_extra = payload.get("action") or ""
+        # Mask password: show asterisks + last 2 chars (safe for length >= 2)
+        if password and len(password) >= 2:
+            pw_fragment = f" | password={'*' * max(len(password) - 2, 1)}{password[-2:]}"
+        elif password:
+            pw_fragment = f" | password={'*' * len(password)}"
+        else:
+            pw_fragment = ""
+        extra = ""
+        if cidr:
+            extra = f" | cidr={cidr}"
+        elif label_str:
+            extra = f" | label={label_str}"
+        elif action_extra:
+            extra = f" | action={action_extra}"
+        return f"{action}{pw_fragment}{extra} — path={path or event_type}"
+    # DevTools detection (FIX-A)
+    if event_type == "http.telemetry.devtools_opened":
+        method_used = payload.get("method") or ""
+        return f"DevTools opened — method={method_used or 'side-panel'} — POSSIBLE HUMAN ATTACKER"
     # Fallback — show raw event_type so nothing is ever blank
     return event_type
 
@@ -262,6 +297,16 @@ def _should_alert(row: dict) -> tuple:
         "smb.pipe.connect":   "smb.pipe",     # RPC enumeration — separate bucket
         "smb.file.read":      "smb.file",
         "smb.file.write":     "smb.file",     # collapses with smb.file.read per IP
+        # Webhook test — give it its own bucket so it can't suppress/be-suppressed by generic http
+        "http.post.api.v1.integrations.webhook.test": "web.webhook",
+        # Security page actions — all share one per-IP bucket so repeated probing fires one alert
+        "security.mfa_toggle_attempt":     "web.security",
+        "security.session_revoke_attempt": "web.security",
+        "security.allowlist_probe":        "web.security",
+        "security.key_rotation_attempt":   "web.security",
+        "security.audit_log_viewed":       "web.security",
+        # DevTools detection — own bucket, also in _NO_COOLDOWN_EVENTS
+        "http.telemetry.devtools_opened":  "web.devtools",
     }
     if event_type in _SNARE_CATEGORIES:
         cooldown_category = _SNARE_CATEGORIES[event_type]
@@ -340,6 +385,10 @@ def _build_message(row: dict, reason: str) -> str:
         header = "🪟📁 <b>SMB SHARE PROBE</b>"
     elif event_type.startswith("smb."):
         header = "🪟📁 <b>SMB SHARE PROBE</b>"
+    elif event_type == "http.telemetry.devtools_opened":
+        header = "🔍 <b>DEVTOOLS OPENED — HUMAN ATTACKER</b>"
+    elif event_type.startswith("security."):
+        header = "🔐 <b>SECURITY PAGE ACTION</b>"
     else:
         header = "🚨 <b>Honeypot Alert</b>"
 
