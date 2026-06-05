@@ -1,0 +1,93 @@
+# Module 8 — smb-lure (impacket SMB honeypot)
+# Standalone compose for independent deployment and verification.
+# Run from /opt/honeypot/deploy/module-8-smb-lure/
+#
+# OPERATOR PREREQUISITES (do not skip):
+#   1. Modules 1–5 verified (data-net, honeypot-net, postgres, redis, log-shipper all running)
+#   2. Copy and populate the .env file:
+#        cp .env.example .env && chmod 600 .env
+#   3. Create the lure share directory on the host:
+#        sudo mkdir -p /opt/honeypot/config/smb
+#   4. Populate lure files in /opt/honeypot/config/smb/ (see Cover Story in improvement-fix.md)
+#   5. Build and start:
+#        docker compose up -d --build
+#   6. Verify: bash verify-module-8.sh — all 5 checks must pass
+#
+# *** PORT 445 DNAT — HOLD ***
+# The DNAT rule for port 445 is NOT automatically added by honeypot-dnat.sh.
+# Before adding it, confirm that port 445 is NOT already in use by the
+# co-tenant Dionaea container (friend's HoneyDash project).
+# Port conflict check: docker ps | grep -E "0\.0\.0\.0:445|:::445"
+# If port 445 is free, add to /opt/honeypot/deploy/systemd/honeypot-dnat.sh:
+#   rule "dport 445 dnat to 10.10.20.10:445"  tcp dport 445  dnat to 10.10.20.10:445
+#   iptables -I DOCKER-USER 1 -d 10.10.20.10/32 -p tcp --dport 445 -j ACCEPT
+# Then: sudo systemctl daemon-reload && sudo systemctl restart honeypot-dnat.service
+# Also open port 445 at the Contabo provider firewall panel.
+#
+# NETWORK MODEL:
+#   smb-lure joins honeypot-net only (same as cowrie, opencanary, mariadb-lure).
+#   It also joins data-net to write events directly to PostgreSQL + Redis.
+#   No host port binding — internet access via DNAT (see above).
+#
+# VOLUME MODEL:
+#   smb-logs   → /var/log/smb    (JSON event log tailed read-only by log-shipper)
+#   /opt/honeypot/config/smb → /share:ro  (lure files served by SMB share)
+
+networks:
+  honeypot-net:
+    external: true
+    name: honeypot-net   # created by Module 2; joining only
+
+  data-net:
+    external: true
+    name: data-net       # created by Module 1; joining only
+
+volumes:
+  smb-logs:
+    name: module-8-smb-lure_smb-logs   # explicit name — avoids project-dir prefix ambiguity
+
+services:
+  smb-lure:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smb-lure
+    restart: on-failure:5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE   # required to bind port 445 (< 1024) as non-root smbsvc user
+    networks:
+      honeypot-net:
+        ipv4_address: 10.10.20.10   # pinned — DNAT rule targets this IP exactly
+      data-net: {}                  # provides access to postgres:5432 and redis:6379
+    # No ports: — internet access via DNAT only (see OPERATOR PREREQUISITES above)
+    volumes:
+      # JSON event log — tailed read-only by log-shipper (Module 5 must mount this volume too)
+      - smb-logs:/var/log/smb
+      # Lure share content — bind-mount so operator can add files without rebuild.
+      # Contents appear in directory listings when attacker runs smbclient or net view.
+      # Operator must: sudo mkdir -p /opt/honeypot/config/smb
+      - /opt/honeypot/config/smb:/share:ro
+    env_file:
+      - .env
+    environment:
+      - SMB_LOG=/var/log/smb/smb_events.json
+      - SMB_SHARE_NAME=neuro-data-share
+      - SMB_SERVER_NAME=NEURO-TRAIN-01
+      - SMB_DOMAIN=NEURO
+      - PYTHONUNBUFFERED=1
+    mem_limit: 256m          # impacket runtime is heavier than expected; 128m causes OOM under scan load
+    memswap_limit: 256m
+    cpus: "0.25"
+    pids_limit: 50
+    healthcheck:
+      # Port 445 responds to TCP SYN — a successful connect confirms the server is up.
+      test: ["CMD", "python", "-c",
+             "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',445)); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -88,6 +88,7 @@ FLUSH_INTERVAL  = int(os.environ.get("FLUSH_INTERVAL", "5"))
 COWRIE_LOG      = os.environ.get("COWRIE_LOG", "/var/log/cowrie/cowrie.json")
 OPENCANARY_LOG  = os.environ.get("OPENCANARY_LOG", "/var/log/opencanary/opencanary.json")
 MARIADB_LOG     = os.environ.get("MARIADB_LOG", "/var/log/mariadb/general.log")
+SMB_LOG         = os.environ.get("SMB_LOG", "/var/log/smb/smb_events.json")
 SPOOL_DIR       = Path(os.environ.get("SPOOL_DIR", "/archive/spool"))
 
 # ---------------------------------------------------------------------------
@@ -1104,6 +1105,144 @@ class MariaDBFileEventHandler(FileSystemEventHandler):
 
 
 # ---------------------------------------------------------------------------
+# SMB JSON log tailer (Module 8 — smb-lure)
+# ---------------------------------------------------------------------------
+# smb_server.py writes one JSON object per line to smb_events.json.
+# Each line contains: eventid, src_ip, src_port, dst_port, username, session,
+# timestamp, ntlmv2_hash (for smb.ntlmv2.hash events), sensor, _sensor_type.
+#
+# Log rotation is handled with the break+re-open pattern (same fix as the
+# HoneyDash log rotation bug — f.seek(0) on old handle silently missed events).
+# ---------------------------------------------------------------------------
+
+class SmbTailer:
+    """Tails /var/log/smb/smb_events.json, parses each JSON line, enqueues normalized events."""
+
+    def __init__(self, log_path: str):
+        self.log_path = log_path
+        self._fh      = None
+        self._inode   = None
+        self._partial = ""
+
+    def _open(self) -> bool:
+        try:
+            self._fh    = open(self.log_path, "r", encoding="utf-8", errors="replace")
+            stat        = os.stat(self.log_path)
+            self._inode = stat.st_ino
+            self._fh.seek(0, 2)   # tail from end on first open — skip historical events
+            self._partial = ""
+            log.info("smb_tailer_opened", path=self.log_path)
+            return True
+        except FileNotFoundError:
+            log.warning("smb_log_not_found", path=self.log_path,
+                        hint="smb-lure container may not have started yet; will retry")
+            return False
+        except Exception as exc:
+            log.error("smb_open_error", path=self.log_path, error=str(exc))
+            return False
+
+    def _check_rotation(self) -> None:
+        """Detect log rotation (inode change) and reopen."""
+        if self._fh is None:
+            return
+        try:
+            stat = os.stat(self.log_path)
+            if stat.st_ino != self._inode:
+                log.info("smb_log_rotated", path=self.log_path)
+                self._fh.close()
+                self._fh = None
+                # Do NOT seek on the old handle — break out so outer loop re-opens fresh.
+                self._open()
+        except FileNotFoundError:
+            self._fh.close()
+            self._fh = None
+
+    def read_new_lines(self) -> None:
+        if self._fh is None:
+            if not self._open():
+                return
+        self._check_rotation()
+        if self._fh is None:
+            return
+        while True:
+            chunk = self._fh.readline()
+            if not chunk:
+                break
+            if not chunk.endswith("\n"):
+                # Line not yet complete — buffer and wait for next inotify event
+                self._partial += chunk
+                break
+            line = (self._partial + chunk).strip()
+            self._partial = ""
+            if not line:
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError as exc:
+                log.warning("smb_json_parse_error", line=line[:200], error=str(exc))
+                continue
+            if not isinstance(raw, dict):
+                continue
+            self._process(raw)
+
+    def _process(self, raw: dict) -> None:
+        """Normalize a smb_server.py JSON event and enqueue it."""
+        eventid = raw.get("eventid", "")
+
+        # Startup sentinel — not an attacker event; suppress silently
+        if eventid == "smb.server.started":
+            return
+
+        src_ip   = raw.get("src_ip", "")
+        src_port = raw.get("src_port")
+        geo      = enrich_geoip(src_ip)
+
+        # Build payload dict from SMB-specific fields
+        # ntlmv2_hash is the highest-value field; kept in payload not password column
+        payload_fields = {}
+        for key in ("ntlmv2_hash", "domain", "pipe_name", "path",
+                    "file_name", "shares_requested", "ntlm_flags"):
+            v = raw.get(key)
+            if v is not None:
+                payload_fields[key] = v
+
+        event = {
+            "eventid":      eventid,
+            "src_ip":       src_ip,
+            "src_port":     int(src_port) if src_port is not None else None,
+            "session":      raw.get("session", ""),
+            "timestamp":    raw.get("timestamp", _now_iso()),
+            "sensor":       "smb",
+            "dst_port":     raw.get("dst_port", 445),
+            "username":     raw.get("username"),
+            "password":     None,    # NTLM hash goes in payload, never in password column
+            "_sensor_type": "smb",
+            "_protocol":    "smb",
+            "_raw":         raw,
+            # Make payload_fields available to PostgresWriter.write() via event dict
+            **payload_fields,
+            **geo,
+        }
+        _enqueue(event)
+
+
+class SmbFileEventHandler(FileSystemEventHandler):
+    def __init__(self, tailer: SmbTailer):
+        self._tailer = tailer
+
+    def on_modified(self, event):
+        if not event.is_directory and event.src_path == self._tailer.log_path:
+            self._tailer.read_new_lines()
+
+    def on_moved(self, event):
+        if not event.is_directory and (
+            event.src_path == self._tailer.log_path or
+            event.dest_path == self._tailer.log_path
+        ):
+            self._tailer.read_new_lines()
+
+
+# ---------------------------------------------------------------------------
 # PostgreSQL writer
 # ---------------------------------------------------------------------------
 # Writes normalized events to the honeypot_events hypertable.
@@ -1139,16 +1278,22 @@ def _compute_threat_score(eventid: str, sensor_type: str) -> int:
         return 85
     if eventid in ("http.rce.attempt", "http.lfi.attempt"):
         return 80
+    if eventid == "smb.ntlmv2.hash":
+        return 80    # credential capture — same tier as RCE/LFI attempt
     if eventid == "http.sqli.attempt":
         return 75
     if eventid == "http.lure.credential.success":
         return 70
+    if eventid in ("smb.file.write", "smb.pipe.connect"):
+        return 65    # lateral movement indicators
     if sensor_type == "mariadb":
         return 60
     if "lure" in eventid or eventid in ("/.env", "/config.yaml"):
         return 55
     if eventid == "cowrie.login.failed":
         return 40
+    if eventid in ("smb.enum.shares", "smb.auth.attempt", "smb.connect"):
+        return 35    # SMB recon — comparable to cowrie.login.failed
     if eventid.startswith("http."):
         return 20
     return 10
@@ -1172,6 +1317,14 @@ def _compute_tags(eventid: str, sensor_type: str) -> list:
         tags.add("credential-theft")
     if sensor_type == "mariadb":
         tags.add("database-recon")
+    # SMB sensor tags (Module 8)
+    if eventid == "smb.ntlmv2.hash":
+        tags.update(["credential-theft", "smb-probe"])
+    if eventid == "smb.file.write":
+        tags.update(["lateral-movement", "smb-probe"])
+    if eventid in ("smb.enum.shares", "smb.connect", "smb.auth.attempt", "smb.pipe.connect",
+                   "smb.file.read"):
+        tags.add("smb-probe")
     return list(tags)
 
 UPSERT_SESSION_SQL = """
@@ -1252,6 +1405,9 @@ def _classify_kill_chain_stage(eventid: str, payload: dict) -> str | None:
     if any(p in path for p in ("/.env", "/config.yaml", "/api/v1/internal",
                                 "/api/v1/lure", "/.git/config")):
         return "CREDENTIAL_ACCESS"
+    # SMB NTLMv2 hash capture = credential access
+    if eventid == "smb.ntlmv2.hash":
+        return "CREDENTIAL_ACCESS"
 
     # DISCOVERY — enumeration of the system
     if eventid == "cowrie.command.input" and re.search(
@@ -1265,9 +1421,21 @@ def _classify_kill_chain_stage(eventid: str, payload: dict) -> str | None:
     # INITIAL_ACCESS — authentication / credential attempts
     if eventid in ("cowrie.login.failed", "cowrie.login.success"):
         return "INITIAL_ACCESS"
+    # SMB auth attempt = initial access (NTLM auth exchange attempted)
+    if eventid == "smb.auth.attempt":
+        return "INITIAL_ACCESS"
+    # SMB file discovery = DISCOVERY stage
+    if eventid == "smb.file.read":
+        return "DISCOVERY"
+    # SMB file write = attacker trying to plant a file = EXECUTION
+    if eventid == "smb.file.write":
+        return "EXECUTION"
 
     # RECON — any initial probe
     if eventid == "cowrie.session.connect" or eventid.startswith("http."):
+        return "RECON"
+    # SMB connect / share enum / pipe enumeration = RECON
+    if eventid in ("smb.connect", "smb.enum.shares", "smb.pipe.connect"):
         return "RECON"
 
     return None
@@ -1315,12 +1483,16 @@ class PostgresWriter:
             "opencanary": "opencanary",
             "mariadb":    "mariadb",
             "api":        "api",
+            "smb":        "smb",       # Module 8 — impacket SMB honeypot
         }.get(sensor_type, sensor_type)
 
         # Build the payload JSONB (protocol-specific fields)
         payload_fields = {}
         for k in ("username", "password", "input", "url", "outfile", "duration",
-                   "_protocol", "_logtype", "_logdata", "_http_input"):
+                   "_protocol", "_logtype", "_logdata", "_http_input",
+                   # SMB-specific payload fields (Module 8)
+                   "ntlmv2_hash", "domain", "pipe_name", "path", "file_name",
+                   "shares_requested", "ntlm_flags"):
             v = event.get(k)
             if v is not None:
                 payload_fields[k.lstrip("_")] = v
@@ -1482,6 +1654,7 @@ _HD_SENSOR_NAME = {
     SENSOR_NAME_OPENCANARY: "remote",
     SENSOR_NAME_MARIADB:    "remote",
     SENSOR_NAME_API:        "remote",
+    "smb":                  "remote",   # Module 8 — SMB events mapped to "remote" for HoneyDash
 }
 
 # Internal Docker healthcheck and session bookkeeping — not real attacker events
@@ -1756,6 +1929,7 @@ def main() -> None:
              cowrie_log=COWRIE_LOG,
              opencanary_log=OPENCANARY_LOG,
              mariadb_log=MARIADB_LOG,
+             smb_log=SMB_LOG,
              honeydash_url=HONEYDASH_URL or "(disabled)")
 
     # Ensure spool directory exists
@@ -1796,9 +1970,10 @@ def main() -> None:
     t_flush.start()
 
     # Create tailers
-    cowrie_tailer    = CowrieTailer(COWRIE_LOG)
+    cowrie_tailer     = CowrieTailer(COWRIE_LOG)
     opencanary_tailer = OpenCanaryTailer(OPENCANARY_LOG)
-    mariadb_tailer   = MariaDBTailer(MARIADB_LOG)
+    mariadb_tailer    = MariaDBTailer(MARIADB_LOG)
+    smb_tailer        = SmbTailer(SMB_LOG)
 
     # Set up watchdog observers — one per log directory
     # Each observer uses inotify on Linux for zero-polling efficiency.
@@ -1811,9 +1986,10 @@ def main() -> None:
         observer.schedule(handler, path=log_dir, recursive=False)
         log.info("watchdog_scheduled", log_dir=log_dir, log_file=log_path)
 
-    _watch(cowrie_tailer,    CowrieFileEventHandler,    COWRIE_LOG)
-    _watch(opencanary_tailer, OpenCanaryFileEventHandler, OPENCANARY_LOG)
-    _watch(mariadb_tailer,   MariaDBFileEventHandler,   MARIADB_LOG)
+    _watch(cowrie_tailer,     CowrieFileEventHandler,     COWRIE_LOG)
+    _watch(opencanary_tailer, OpenCanaryFileEventHandler,  OPENCANARY_LOG)
+    _watch(mariadb_tailer,    MariaDBFileEventHandler,    MARIADB_LOG)
+    _watch(smb_tailer,        SmbFileEventHandler,        SMB_LOG)
 
     observer.start()
     log.info("log_shipper_ready", queue_maxsize=EVENT_QUEUE.maxsize)
@@ -1824,7 +2000,7 @@ def main() -> None:
     try:
         while True:
             time.sleep(30)
-            for tailer in (cowrie_tailer, opencanary_tailer, mariadb_tailer):
+            for tailer in (cowrie_tailer, opencanary_tailer, mariadb_tailer, smb_tailer):
                 if tailer._fh is None:
                     tailer.read_new_lines()  # will retry open internally
                 else:

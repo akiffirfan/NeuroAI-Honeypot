@@ -79,6 +79,10 @@ volumes:
     external: true       # created by Module 4
     name: mariadb-logs
 
+  smb-logs:
+    external: true       # created by Module 8 (smb-lure); optional — log-shipper starts fine
+    name: module-8-smb-lure_smb-logs   # must exactly match the name: in module-8 docker-compose.yml
+
   geoip-data:
     name: geoip-data     # operator must populate manually (see prerequisites above)
 
@@ -113,6 +117,10 @@ services:
       - cowrie-logs:/var/log/cowrie:ro
       - opencanary-logs:/var/log/opencanary:ro
       - mariadb-logs:/var/log/mariadb:ro
+      # SMB event log — read-only; created by Module 8 smb-lure container
+      # If Module 8 is not deployed, this volume does not exist and log-shipper will warn
+      # but continue running fine (SmbTailer retries open every 30s).
+      - smb-logs:/var/log/smb:ro
       # GeoIP databases — read-only; operator populates geoip-data volume manually
       - geoip-data:/geoip:ro
       # Disk spool for backpressure — writable; lives under /opt/honeypot/services/log-shipper/archive/
@@ -158,6 +166,10 @@ services:
 
       # Disk spool path for write-through queue overflow
       - SPOOL_DIR=/archive/spool
+
+      # SMB event log path — must match SMB_LOG_FILE in module-8 .env
+      # Set to empty string to disable SMB tailing if Module 8 is not deployed.
+      - SMB_LOG=/var/log/smb/smb_events.json
 
       # Telegram alerting is handled exclusively by the sentinel container.
       # Do NOT pass TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID here — log-shipper's

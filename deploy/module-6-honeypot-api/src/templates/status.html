@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Neuro AI Platform — System Status">
+  <title>System Status — Neuro</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <script>var _twWarn=console.warn;console.warn=function(m){if(typeof m==='string'&&m.indexOf('cdn.tailwindcss.com')!==-1)return;_twWarn.apply(console,arguments);};</script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    :root {
+      --c-canvas:    #080A0F;
+      --c-surface:   #0E1018;
+      --c-elevated:  #141721;
+      --c-border:    #1E2235;
+      --c-muted:     #6B7A99;
+      --c-faint:     #323752;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { line-height: 1.5; }
+    body {
+      font-family: 'Outfit', system-ui, sans-serif;
+      background: var(--c-canvas);
+      color: #E2E8F0;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+  </style>
+
+  <script>
+  (function() {
+    var _ref = document.referrer;
+    var _ua  = navigator.userAgent;
+    fetch('/api/v1/telemetry', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({type: 'page_view', page: '/status', referrer: _ref, ua: _ua, ts: Date.now()})
+    }).catch(function(){});
+  })();
+  </script>
+</head>
+<body>
+
+  <!-- Header -->
+  <div style="border-bottom:1px solid var(--c-border);background:var(--c-surface);">
+    <div style="max-width:900px;margin:0 auto;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="width:26px;height:26px;background:linear-gradient(135deg,#06C0D8,#9B59FF);border-radius:6px;display:flex;align-items:center;justify-content:center;">
+          <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="white" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        </div>
+        <div>
+          <span style="font-size:15px;font-weight:700;color:#fff;letter-spacing:-0.02em;">neuro</span>
+          <span style="font-size:11px;color:var(--c-muted);margin-left:8px;">System Status</span>
+        </div>
+      </div>
+      <a href="/dashboard" style="font-size:12px;color:var(--c-muted);text-decoration:none;transition:color 0.15s;" onmouseover="this.style.color='#E2E8F0'" onmouseout="this.style.color='var(--c-muted)'">Back to Dashboard &rarr;</a>
+    </div>
+  </div>
+
+  <div style="max-width:900px;margin:0 auto;padding:32px 24px;">
+
+    <!-- Overall status banner -->
+    <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:12px;padding:20px 24px;margin-bottom:32px;display:flex;align-items:center;gap:16px;">
+      <div style="width:40px;height:40px;min-width:40px;background:rgba(34,197,94,0.15);border-radius:50%;display:flex;align-items:center;justify-content:center;">
+        <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="#22C55E" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+      </div>
+      <div>
+        <p style="font-size:18px;font-weight:700;color:#fff;">All Systems Operational</p>
+        <p class="mono" style="font-size:11px;color:var(--c-muted);margin-top:2px;">Last updated: 2026-06-04T23:47:02Z</p>
+      </div>
+    </div>
+
+    <!-- Service cards grid -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;margin-bottom:32px;">
+
+      <!-- Card 1: Training API -->
+      <div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;padding:20px;transition:border-color 0.15s;" onmouseenter="statusCardHover(this,'training_api')" onmouseleave="this.style.borderColor='var(--c-border)'">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <p style="font-size:14px;font-weight:600;color:#fff;">Training API</p>
+          <span style="font-size:10px;color:#22C55E;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);padding:2px 8px;border-radius:20px;font-weight:500;">Operational</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Uptime (30d)</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">99.97%</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Avg latency</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">142 ms</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Active jobs</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">3</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Version</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">v2.3.1</p>
+          </div>
+        </div>
+        <div style="margin-top:10px;background:var(--c-elevated);border-radius:8px;padding:10px;">
+          <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Endpoint</p>
+          <p class="mono" style="font-size:11px;color:#E2E8F0;">https://neuro.cyveera.com/api/v1</p>
+        </div>
+      </div>
+
+      <!-- Card 2: GPU Cluster -->
+      <div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;padding:20px;transition:border-color 0.15s;" onmouseenter="statusCardHover(this,'gpu_cluster')" onmouseleave="this.style.borderColor='var(--c-border)'">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <p style="font-size:14px;font-weight:600;color:#fff;">GPU Cluster</p>
+          <span style="font-size:10px;color:#22C55E;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);padding:2px 8px;border-radius:20px;font-weight:500;">Operational</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Node</p>
+            <p class="mono" style="font-size:11px;color:#E2E8F0;">neuro-train-01.internal</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">GPUs active</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">8 / 8</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">VRAM utilisation</p>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+              <div style="flex:1;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;">
+                <div style="width:87%;height:100%;background:linear-gradient(90deg,#F59E0B,#EF4444);border-radius:2px;"></div>
+              </div>
+              <p class="mono" style="font-size:11px;color:#F59E0B;flex-shrink:0;">87%</p>
+            </div>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Interconnect</p>
+            <p class="mono" style="font-size:11px;color:#E2E8F0;">NVLink 4.0</p>
+          </div>
+        </div>
+        <div style="margin-top:10px;background:var(--c-elevated);border-radius:8px;padding:10px;">
+          <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Management access</p>
+          <p class="mono" style="font-size:11px;color:#A5B4FC;">neuro-svc@neuro-train-01.internal</p>
+        </div>
+        <!-- internal: neuro-train-01.internal:8080 health endpoint -> GET /api/v1/cluster/health -->
+        <!-- SSH jump host not required; direct access via 10.31.4.22 port 22 (neuro-svc credentials in /etc/neuro/deploy.conf) -->
+      </div>
+
+      <!-- Card 3: Data Pipeline -->
+      <div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;padding:20px;transition:border-color 0.15s;" onmouseenter="statusCardHover(this,'data_pipeline')" onmouseleave="this.style.borderColor='var(--c-border)'">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <p style="font-size:14px;font-weight:600;color:#fff;">Data Pipeline</p>
+          <span style="font-size:10px;color:#22C55E;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);padding:2px 8px;border-radius:20px;font-weight:500;">Operational</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Last job completed</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">4 min ago</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Jobs processed (24h)</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">47</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Data ingested today</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">1.2 TB</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Queue depth</p>
+            <p class="mono" style="font-size:12px;color:#E2E8F0;">2 jobs pending</p>
+          </div>
+        </div>
+        <div style="margin-top:10px;background:var(--c-elevated);border-radius:8px;padding:10px;">
+          <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Worker nodes</p>
+          <p class="mono" style="font-size:11px;color:#E2E8F0;">neuro-train-01.internal, neuro-train-02.internal</p>
+        </div>
+      </div>
+
+      <!-- Card 4: Auth Service -->
+      <!-- TODO: remove svc-deploy credentials from deploy config before prod — priya.nair @ 2026-04-10 -->
+      <!-- OIDC callback registered: https://neuro.cyveera.com/api/v1/auth/sso/callback -->
+      <div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;padding:20px;transition:border-color 0.15s;" onmouseenter="statusCardHover(this,'auth_service')" onmouseleave="this.style.borderColor='var(--c-border)'">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <p style="font-size:14px;font-weight:600;color:#fff;">Auth Service</p>
+          <span style="font-size:10px;color:#22C55E;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);padding:2px 8px;border-radius:20px;font-weight:500;">Operational</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Provider</p>
+            <p style="font-size:11px;color:#E2E8F0;">Google Workspace OIDC</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Uptime (30d)</p>
+            <p class="mono" style="font-size:12px;color:#22C55E;">100%</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">SSO issuer</p>
+            <p class="mono" style="font-size:11px;color:#E2E8F0;">neuro.cyveera.com</p>
+          </div>
+          <div style="background:var(--c-elevated);border-radius:8px;padding:10px;">
+            <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Session duration</p>
+            <p class="mono" style="font-size:11px;color:#E2E8F0;">8h (configurable)</p>
+          </div>
+        </div>
+        <div style="margin-top:10px;background:var(--c-elevated);border-radius:8px;padding:10px;">
+          <p style="font-size:10px;color:var(--c-muted);margin-bottom:3px;">Service account</p>
+          <p class="mono" style="font-size:11px;color:#A5B4FC;">svc-deploy@neuro.cyveera.com</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Incident History -->
+    <div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;padding:20px;">
+      <h3 style="font-size:11px;font-weight:600;color:var(--c-muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:14px;">Incident History</h3>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+
+        <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--c-elevated);border-radius:8px;">
+          <div style="min-width:0;flex:1;">
+            <p style="font-size:12px;color:#E2E8F0;">GPU node neuro-train-01 memory fault — resolved in 47 min</p>
+            <p class="mono" style="font-size:10px;color:var(--c-muted);margin-top:2px;">2026-05-28</p>
+          </div>
+          <span style="font-size:10px;color:#22C55E;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);padding:2px 8px;border-radius:20px;flex-shrink:0;">Resolved</span>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--c-elevated);border-radius:8px;">
+          <div style="min-width:0;flex:1;">
+            <p style="font-size:12px;color:#E2E8F0;">Data pipeline queue backup — resolved in 2h 12 min</p>
+            <p class="mono" style="font-size:10px;color:var(--c-muted);margin-top:2px;">2026-05-14</p>
+          </div>
+          <span style="font-size:10px;color:#22C55E;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);padding:2px 8px;border-radius:20px;flex-shrink:0;">Resolved</span>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--c-elevated);border-radius:8px;">
+          <div style="min-width:0;flex:1;">
+            <p style="font-size:12px;color:#E2E8F0;">Auth service elevated latency (Google OIDC upstream)</p>
+            <p class="mono" style="font-size:10px;color:var(--c-muted);margin-top:2px;">2026-04-29</p>
+          </div>
+          <span style="font-size:10px;color:#22C55E;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);padding:2px 8px;border-radius:20px;flex-shrink:0;">Resolved</span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div style="margin-top:24px;text-align:center;">
+      <p style="font-size:11px;color:var(--c-faint);">&copy; 2025 Cyvera AI Infrastructure Ltd &middot; Neuro v2.3.1 &middot; <a href="/status" style="color:var(--c-muted);">Status</a></p>
+    </div>
+
+  </div>
+
+  <script>
+  var _statusStart = Date.now();
+
+  function statusCardHover(el, service) {
+    el.style.borderColor = 'rgba(6,192,216,0.25)';
+    fetch('/api/v1/telemetry', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({type: 'status_service_viewed', service: service, ts: Date.now()})
+    }).catch(function(){});
+  }
+
+  window.addEventListener('pagehide', function() {
+    fetch('/api/v1/telemetry', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({type: 'status_page_exit', dwell_ms: Date.now() - _statusStart, ts: Date.now()})
+    }).catch(function(){});
+  });
+  </script>
+
+</body>
+</html>

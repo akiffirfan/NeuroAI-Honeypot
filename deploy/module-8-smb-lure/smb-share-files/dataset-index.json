@@ -1,0 +1,47 @@
+{
+  "repository": "neuro-data-share",
+  "server": "neuro-train-01.internal",
+  "last_updated": "2026-05-31T03:17:42Z",
+  "updated_by": "svc-deploy",
+  "datasets": [
+    {
+      "name": "imagenet-21k-filtered",
+      "path": "/datasets/imagenet-21k-filtered/",
+      "size_gb": 1247.3,
+      "format": "tfrecord",
+      "classification": "INTERNAL",
+      "description": "Filtered ImageNet-21k for fine-tuning — 11M images, 21841 classes",
+      "last_accessed": "2026-05-30T14:22:11Z"
+    },
+    {
+      "name": "internal-slack-corpus-v4",
+      "path": "/datasets/internal-slack-corpus-v4/",
+      "size_gb": 8.7,
+      "format": "jsonl",
+      "classification": "CONFIDENTIAL",
+      "description": "Internal Slack message corpus for instruction tuning — Q1 2026",
+      "last_accessed": "2026-05-28T09:04:33Z",
+      "note": "Export: workspace-export-2026-05-31.csv"
+    },
+    {
+      "name": "medical-records-deidentified-v2",
+      "path": "/datasets/medical-records-deidentified-v2/",
+      "size_gb": 42.1,
+      "format": "parquet",
+      "classification": "RESTRICTED",
+      "description": "De-identified patient records for NLP research — IRB approved",
+      "last_accessed": "2026-05-25T18:30:00Z"
+    },
+    {
+      "name": "llama3-8b-sft-checkpoints",
+      "path": "/models/llama3-8b-sft/",
+      "size_gb": 31.4,
+      "format": "safetensors",
+      "classification": "INTERNAL",
+      "description": "SFT checkpoints for llama3-8b production fine-tune",
+      "last_accessed": "2026-05-31T12:00:00Z"
+    }
+  ],
+  "service_account": "neuro-svc",
+  "contact": "priya.nair@neuro.ai"
+}

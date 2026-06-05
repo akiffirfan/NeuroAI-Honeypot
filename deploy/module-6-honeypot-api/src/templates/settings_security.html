@@ -1,0 +1,492 @@
+{% extends "base.html" %}
+{% block title %}Security — Neuro{% endblock %}
+
+{% block body %}
+<div class="flex h-screen bg-canvas overflow-hidden">
+
+  <!-- SIDEBAR -->
+  <aside style="width:220px;min-width:220px;flex-shrink:0;background:var(--c-surface);border-right:1px solid var(--c-border);display:flex;flex-direction:column;position:relative;z-index:10;">
+
+    <!-- Logo row -->
+    <div style="padding:14px 16px;border-bottom:1px solid var(--c-border);">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <img src="/static/images/logo.png" alt="Logo" style="width:28px;height:28px;object-fit:contain;flex-shrink:0;" />
+        <div style="flex:1;min-width:0;overflow:hidden;">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:14px;font-weight:700;color:#fff;letter-spacing:-0.02em;white-space:nowrap;">neuro</span>
+            <span class="mono" style="font-size:9px;color:var(--c-faint);background:var(--c-elevated);border:1px solid var(--c-border);padding:1px 5px;border-radius:4px;white-space:nowrap;">v2.3</span>
+          </div>
+          <p style="font-size:10px;color:var(--c-faint);margin-top:1px;white-space:nowrap;">Neuro AI — Production</p>
+        </div>
+      </div>
+    </div>
+
+    <nav style="flex:1;padding:12px 8px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:1px;">
+      <p class="sidebar-label nb-label">Training</p>
+      <a href="/dashboard" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:400;color:var(--c-muted);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 13a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1h-4a1 1 0 01-1-1v-6z"/></svg><span class="nb-label">Overview</span></a><a href="/runs" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:400;color:var(--c-muted);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg><span class="nb-label">Runs</span></a><a href="/models" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:400;color:var(--c-muted);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg><span class="nb-label">Models</span></a><a href="/datasets" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:400;color:var(--c-muted);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg><span class="nb-label">Datasets</span></a><a href="/dashboard?tab=pipelines" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:400;color:var(--c-muted);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg><span class="nb-label">Pipelines</span></a>
+      <div style="height:1px;background:var(--c-border);margin:6px 4px;"></div>
+      <p class="sidebar-label nb-label">Storage</p>
+      <a href="/artifacts" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:400;color:var(--c-muted);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg><span class="nb-label">Artifacts</span></a>
+      <div style="height:1px;background:var(--c-border);margin:6px 4px;"></div>
+      <p class="sidebar-label nb-label">System</p>
+      <a href="/notifications" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:400;color:var(--c-muted);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg><span class="nb-label">Notifications</span></a>
+      <a href="/settings/security" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:500;color:#ffffff;background:linear-gradient(135deg,rgba(6,192,216,0.12),rgba(155,89,255,0.12));border:1px solid rgba(6,192,216,0.15);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg><span class="nb-label">Security</span></a>
+      <a href="/status" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13.5px;font-weight:400;color:var(--c-muted);text-decoration:none;width:100%;box-sizing:border-box;white-space:nowrap;overflow:hidden;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg><span class="nb-label">Status</span></a>
+    </nav>
+
+    <!-- User block -->
+    <div style="padding:10px;border-top:1px solid var(--c-border);position:relative;">
+      <button onclick="toggleUserPopup(event)"
+        style="width:100%;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;transition:background 0.15s;cursor:pointer;background:transparent;border:none;overflow:hidden;"
+        onmouseover="this.style.background='var(--c-elevated)'"
+        onmouseout="this.style.background='transparent'">
+        <div style="width:30px;height:30px;min-width:30px;border-radius:8px;background:linear-gradient(135deg,rgba(6,192,216,0.25),rgba(155,89,255,0.25));border:1px solid rgba(6,192,216,0.2);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#06C0D8;flex-shrink:0;">MC</div>
+        <div id="nb-user-text" style="min-width:0;flex:1;text-align:left;overflow:hidden;">
+          <p style="font-size:12px;font-weight:600;color:#E2E8F0;white-space:nowrap;">Ming Chen</p>
+          <p style="font-size:10px;color:var(--c-faint);white-space:nowrap;" class="mono">m.chen@neuro.ai</p>
+        </div>
+        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" class="nb-label" style="color:var(--c-faint);flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"/></svg>
+      </button>
+
+      <!-- User popup -->
+      <div id="user-popup" style="display:none;position:absolute;bottom:68px;left:8px;right:8px;background:var(--c-surface);border:1px solid var(--c-border-hi);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.6);padding:6px;z-index:50;">
+        <div style="padding:8px 12px 6px;">
+          <p style="font-size:12px;font-weight:600;color:#E2E8F0;">Ming Chen</p>
+          <p style="font-size:10px;color:var(--c-faint);" class="mono">ML Lead</p>
+        </div>
+        <div style="height:1px;background:var(--c-border);margin:4px 8px;"></div>
+        <a href="/admin" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;font-size:13px;color:var(--c-muted);text-decoration:none;transition:all 0.1s;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          Organisation Settings
+        </a>
+        <div style="height:1px;background:var(--c-border);margin:4px 8px;"></div>
+        <a href="/settings/api-keys" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;font-size:13px;color:var(--c-muted);text-decoration:none;transition:all 0.1s;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+          API Keys
+        </a>
+        <div style="height:1px;background:var(--c-border);margin:4px 8px;"></div>
+        <a href="/settings/security" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:500;background:var(--c-elevated);color:#E2E8F0;text-decoration:none;">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+          Security
+        </a>
+        <div style="height:1px;background:var(--c-border);margin:4px 8px;"></div>
+        <a href="/settings/profile" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;font-size:13px;color:var(--c-muted);text-decoration:none;transition:all 0.1s;" onmouseover="this.style.background='var(--c-elevated)';this.style.color='#E2E8F0'" onmouseout="this.style.background='transparent';this.style.color='var(--c-muted)'">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+          Profile
+        </a>
+        <div style="height:1px;background:var(--c-border);margin:4px 8px;"></div>
+        <a href="/auth/logout" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;font-size:13px;color:#FCA5A5;text-decoration:none;transition:all 0.1s;" onmouseover="this.style.background='var(--c-elevated)'" onmouseout="this.style.background='transparent'">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+          Sign out
+        </a>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- MAIN -->
+  <div class="flex-1 flex flex-col overflow-hidden min-w-0">
+    <header class="bg-surface border-b border-border px-6 py-3.5 flex items-center justify-between flex-shrink-0">
+      <div>
+        <h2 class="text-sm font-semibold text-white">Security Settings</h2>
+        <p class="text-[11px] text-faint font-mono">m.chen@neuro.ai &middot; workspace: neuro-prod</p>
+      </div>
+    </header>
+
+    <main class="flex-1 overflow-y-auto p-6">
+      <div class="max-w-2xl mx-auto space-y-5">
+
+        <!-- Card 1: Two-Factor Authentication -->
+        <div class="bg-surface border border-border rounded-xl p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xs font-semibold uppercase tracking-widest text-faint">Two-Factor Authentication</h3>
+            <span class="text-[10px] font-mono text-green-400 bg-green-400/10 border border-green-400/20 px-2 py-0.5 rounded-full">Enabled</span>
+          </div>
+          <div class="space-y-3 text-xs">
+            <div class="flex items-center justify-between bg-elevated rounded-lg px-3 py-2.5">
+              <span class="text-faint">Current method</span>
+              <span class="font-mono text-gray-200">TOTP (Google Authenticator)</span>
+            </div>
+            <div class="flex items-center justify-between bg-elevated rounded-lg px-3 py-2.5">
+              <span class="text-faint">Recovery codes</span>
+              <span class="font-mono text-gray-200">8 codes remaining</span>
+            </div>
+          </div>
+          <div class="mt-4">
+            <button id="mfa-disable-btn" onclick="showMfaModal()" class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-medium bg-yellow-500/10 border border-yellow-500/25 text-yellow-300 hover:bg-yellow-500/20 transition-all">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.924-.833-2.694 0L3.34 16.5C2.57 18.333 3.532 20 5.072 20z"/></svg>
+              Disable 2FA (24h)
+            </button>
+            <p class="text-[10px] text-faint mt-2 text-center">Disabling 2FA requires re-authentication within 24 hours. Audit log entry created.</p>
+          </div>
+        </div>
+
+        <!-- MFA modal -->
+        <div id="mfa-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;display:none;align-items:center;justify-content:center;">
+          <div class="bg-surface border border-border rounded-xl p-6 w-full max-w-sm mx-4">
+            <h4 class="text-sm font-semibold text-white mb-2">Disable 2FA?</h4>
+            <p class="text-xs text-muted mb-4">This action is logged and requires your current password.</p>
+            <input id="mfa-password" type="password" placeholder="Current password" autocomplete="current-password"
+              class="w-full bg-elevated border border-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-faint focus:outline-none focus:border-indigo-500/50 mb-3" />
+            <div id="mfa-error" class="text-xs text-red-400 mb-2" style="display:none;"></div>
+            <div class="flex gap-2">
+              <button onclick="cancelMfa()" class="flex-1 px-4 py-2 rounded-lg text-xs text-muted border border-border hover:bg-elevated transition-all">Cancel</button>
+              <button onclick="confirmMfa()" class="flex-1 px-4 py-2 rounded-lg text-xs font-medium bg-yellow-500/15 border border-yellow-500/30 text-yellow-300 hover:bg-yellow-500/25 transition-all">Confirm</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: Active Sessions -->
+        <!-- active session tokens are short-lived JWTs; refresh endpoint: POST /api/v1/auth/token/refresh -->
+        <!-- svc: auto-refresh token at /api/v1/auth/refresh -->
+        <div class="bg-surface border border-border rounded-xl p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xs font-semibold uppercase tracking-widest text-faint">Active Sessions</h3>
+            <span class="text-[10px] font-mono text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded-full">3 sessions</span>
+          </div>
+          <div class="space-y-2 text-xs" id="sessions-list">
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2.5" data-session-ref="sess-a1b2c3">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-indigo-300">m.chen@neuro.ai</span>
+                  <span class="text-[9px] bg-green-500/15 text-green-400 border border-green-500/20 px-1.5 py-0.5 rounded-full">you</span>
+                </div>
+                <p class="text-faint mt-0.5">MacBook Pro — Chrome 124 &middot; <span class="font-mono">192.168.1.45</span> &middot; Just now</p>
+              </div>
+              <button onclick="revokeSession(this,'sess-a1b2c3')" class="flex-shrink-0 text-red-400 hover:text-red-300 transition-colors text-[11px] font-medium">Revoke</button>
+            </div>
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2.5" data-session-ref="sess-d4e5f6">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-gray-200">m.chen@neuro.ai</span>
+                </div>
+                <p class="text-faint mt-0.5"><span class="font-mono">neuro-train-01 automation</span> &middot; <span class="font-mono">10.31.4.22</span> &middot; 4 min ago</p>
+              </div>
+              <button onclick="revokeSession(this,'sess-d4e5f6')" class="flex-shrink-0 text-red-400 hover:text-red-300 transition-colors text-[11px] font-medium">Revoke</button>
+            </div>
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2.5" data-session-ref="sess-g7h8i9">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-gray-200">priya.nair@neuro.ai</span>
+                </div>
+                <p class="text-faint mt-0.5">MacBook Air — Safari 17 &middot; <span class="font-mono">192.168.1.48</span> &middot; 12 min ago</p>
+              </div>
+              <button onclick="revokeSession(this,'sess-g7h8i9')" class="flex-shrink-0 text-red-400 hover:text-red-300 transition-colors text-[11px] font-medium">Revoke</button>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Card 3: IP Allowlist -->
+        <!-- allowlist enforced at nginx layer via geo module; reload: docker exec nginx openresty -s reload -->
+        <!-- NEURO_ALLOWLIST_STRICT=false in staging -->
+        <div class="bg-surface border border-border rounded-xl p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xs font-semibold uppercase tracking-widest text-faint">IP Access Allowlist</h3>
+            <span class="text-[10px] font-mono text-gray-400 bg-elevated border border-border px-2 py-0.5 rounded-full">3 entries</span>
+          </div>
+          <div class="space-y-2 text-xs mb-4" id="allowlist-entries">
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2.5">
+              <div class="flex-1 min-w-0">
+                <span class="font-mono text-gray-200">10.31.4.0/24</span>
+                <span class="ml-2 text-faint">Internal cluster network</span>
+              </div>
+              <span class="text-[10px] text-green-400 bg-green-400/10 border border-green-400/20 px-2 py-0.5 rounded-full">Active</span>
+              <button class="text-faint hover:text-red-400 transition-colors text-[11px]">Remove</button>
+            </div>
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2.5">
+              <div class="flex-1 min-w-0">
+                <span class="font-mono text-gray-200">192.168.1.0/24</span>
+                <span class="ml-2 text-faint">Office (SF HQ)</span>
+              </div>
+              <span class="text-[10px] text-green-400 bg-green-400/10 border border-green-400/20 px-2 py-0.5 rounded-full">Active</span>
+              <button class="text-faint hover:text-red-400 transition-colors text-[11px]">Remove</button>
+            </div>
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2.5 opacity-60" id="global-access-row">
+              <div class="flex-1 min-w-0">
+                <span class="font-mono text-gray-400">0.0.0.0/0</span>
+                <span class="ml-2 text-faint">Global access (disabled)</span>
+              </div>
+              <span class="text-[10px] text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 px-2 py-0.5 rounded-full">Disabled</span>
+              <button onclick="enableGlobalAccess()" class="text-indigo-400 hover:text-indigo-300 transition-colors text-[11px] font-medium">Enable</button>
+            </div>
+
+          </div>
+
+          <div id="global-confirm" class="text-xs text-yellow-300 bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2.5 mb-3" style="display:none;">
+            Enabling global access removes IP restrictions for all users. Confirm?
+            <div class="flex gap-2 mt-2">
+              <button onclick="document.getElementById('global-confirm').style.display='none'" class="px-3 py-1 rounded-lg border border-border text-faint hover:bg-elevated transition-all">Cancel</button>
+              <button onclick="document.getElementById('global-confirm').style.display='none'" class="px-3 py-1 rounded-lg bg-yellow-500/20 border border-yellow-500/30 text-yellow-300 hover:bg-yellow-500/30 transition-all">Confirm</button>
+            </div>
+          </div>
+
+          <div class="flex gap-2">
+            <input id="cidr-input" type="text" placeholder="10.0.0.0/8 or 203.0.113.5/32"
+              class="flex-1 bg-elevated border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-faint focus:outline-none focus:border-indigo-500/50" />
+            <input id="cidr-label" type="text" placeholder="Label"
+              class="w-28 bg-elevated border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-faint focus:outline-none focus:border-indigo-500/50" />
+            <button onclick="addCidr()" class="px-3 py-2 rounded-lg text-xs font-medium bg-indigo-500/10 border border-indigo-500/25 text-indigo-300 hover:bg-indigo-500/20 transition-all">Add</button>
+          </div>
+          <div id="cidr-feedback" class="text-[10px] text-green-400 mt-2" style="display:none;"></div>
+        </div>
+
+        <!-- Card 4: API Key Rotation Policy -->
+        <div class="bg-surface border border-border rounded-xl p-5">
+          <h3 class="text-xs font-semibold uppercase tracking-widest text-faint mb-4">Key Rotation Policy</h3>
+          <div class="space-y-2 text-xs mb-4">
+            <div class="flex items-center justify-between bg-elevated rounded-lg px-3 py-2.5">
+              <span class="text-faint">Current policy</span>
+              <span class="text-gray-200">Every 90 days (manual)</span>
+            </div>
+            <div class="flex items-center justify-between bg-elevated rounded-lg px-3 py-2.5">
+              <span class="text-faint">Last rotation</span>
+              <span class="font-mono text-gray-200">2026-03-15 by priya.nair</span>
+            </div>
+            <div class="flex items-center justify-between bg-elevated rounded-lg px-3 py-2.5">
+              <span class="text-faint">Next scheduled</span>
+              <span class="font-mono text-yellow-300">2026-06-13</span>
+            </div>
+          </div>
+          <button onclick="rotateKeys()" id="rotate-btn" class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-medium bg-indigo-500/10 border border-indigo-500/25 text-indigo-300 hover:bg-indigo-500/20 transition-all">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Rotate All Keys Now
+          </button>
+          <div id="rotate-result" class="mt-3 bg-elevated rounded-lg p-3 font-mono text-xs text-gray-300 whitespace-pre-wrap" style="display:none;"></div>
+        </div>
+
+        <!-- Card 5: Audit Log -->
+        <div class="bg-surface border border-border rounded-xl p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xs font-semibold uppercase tracking-widest text-faint">Recent Audit Log</h3>
+            <a href="/api/v1/security/audit-log" onclick="auditLogClick(event)" class="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors">View full log &rarr;</a>
+          </div>
+          <div class="space-y-1.5 text-xs">
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2">
+              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-04 22:09</span>
+              <span class="text-gray-200 flex-1">m.chen@neuro.ai</span>
+              <span class="text-muted flex-1">Login success</span>
+              <span class="font-mono text-faint">192.168.1.45</span>
+            </div>
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2">
+              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-04 18:31</span>
+              <span class="text-gray-200 flex-1">priya.nair@neuro.ai</span>
+              <span class="text-muted flex-1">API key created</span>
+              <span class="font-mono text-faint">192.168.1.48</span>
+            </div>
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2">
+              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-04 09:14</span>
+              <span class="text-gray-200 flex-1">m.chen@neuro.ai</span>
+              <span class="text-muted flex-1">Login success</span>
+              <span class="font-mono text-faint">192.168.1.45</span>
+            </div>
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2 border border-yellow-500/20">
+              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-03 03:14</span>
+              <span class="text-gray-200 flex-1">m.chen@neuro.ai</span>
+              <span class="text-muted flex-1">SSH key used</span>
+              <span class="font-mono text-faint">185.234.219.4</span>
+              <span class="text-[9px] text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 px-1.5 py-0.5 rounded-full flex-shrink-0">Unusual IP</span>
+            </div>
+
+            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2">
+              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-02 16:44</span>
+              <span class="text-gray-200 flex-1">svc-deploy</span>
+              <span class="text-muted flex-1">Token refreshed</span>
+              <span class="font-mono text-faint">10.31.4.22</span>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var _pageStart = Date.now();
+
+// Page load beacons
+fetch('/api/v1/telemetry', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({type: 'page_view', page: 'settings_security', ts: Date.now()})
+}).catch(function(){});
+
+fetch('/api/v1/telemetry', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({type: 'security_sessions_viewed', session_count: 3, ts: Date.now()})
+}).catch(function(){});
+
+// MFA disable flow
+function showMfaModal() {
+  fetch('/api/v1/telemetry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'security_mfa_disable_click', page: 'settings_security', ts: Date.now()})
+  }).catch(function(){});
+  var m = document.getElementById('mfa-modal');
+  m.style.display = 'flex';
+  document.getElementById('mfa-password').value = '';
+  document.getElementById('mfa-error').style.display = 'none';
+}
+
+function cancelMfa() {
+  document.getElementById('mfa-modal').style.display = 'none';
+}
+
+function confirmMfa() {
+  var pw = document.getElementById('mfa-password').value;
+  fetch('/api/v1/telemetry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'security_mfa_confirm', has_input: pw.length > 0, ts: Date.now()})
+  }).catch(function(){});
+  fetch('/api/v1/security/mfa/toggle', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({password: pw, duration_hours: 24})
+  }).then(function(r) {
+    return r.json();
+  }).then(function(j) {
+    document.getElementById('mfa-modal').style.display = 'none';
+    var err = document.getElementById('mfa-error');
+    err.textContent = j.message || 'Verification failed. Re-authentication required.';
+    err.style.display = 'block';
+    setTimeout(function(){ err.style.display = 'none'; }, 4000);
+  }).catch(function() {
+    document.getElementById('mfa-modal').style.display = 'none';
+  });
+}
+
+// Session revoke
+function revokeSession(btn, ref) {
+  fetch('/api/v1/telemetry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'security_session_revoke_click', session_ref: ref, ts: Date.now()})
+  }).catch(function(){});
+  fetch('/api/v1/security/session/revoke', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({session_ref: ref})
+  }).catch(function(){});
+  var row = btn.closest('[data-session-ref]');
+  if (row) {
+    row.style.opacity = '0';
+    row.style.transition = 'opacity 0.3s';
+    setTimeout(function(){ row.remove(); }, 350);
+  }
+}
+
+// Global access enable
+function enableGlobalAccess() {
+  fetch('/api/v1/telemetry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'security_allowlist_enable_global', ts: Date.now()})
+  }).catch(function(){});
+  document.getElementById('global-confirm').style.display = 'block';
+  document.getElementById('global-access-row').style.opacity = '1';
+}
+
+// Add CIDR
+function addCidr() {
+  var cidr = document.getElementById('cidr-input').value.trim();
+  var label = document.getElementById('cidr-label').value.trim();
+  if (!cidr) return;
+  fetch('/api/v1/telemetry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'security_allowlist_add_attempt', cidr_length: cidr.length, ts: Date.now()})
+  }).catch(function(){});
+  setTimeout(function() {
+    fetch('/api/v1/security/allowlist/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cidr: cidr, label: label})
+    }).then(function(r){ return r.json(); }).then(function(j) {
+      if (j.ok) {
+        var fb = document.getElementById('cidr-feedback');
+        fb.textContent = 'Added ' + j.cidr + ' — effective immediately';
+        fb.style.display = 'block';
+        document.getElementById('cidr-input').value = '';
+        document.getElementById('cidr-label').value = '';
+        setTimeout(function(){ fb.style.display = 'none'; }, 3000);
+      }
+    }).catch(function(){});
+  }, 450);
+}
+
+// Key rotation
+function rotateKeys() {
+  fetch('/api/v1/telemetry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'security_key_rotation_click', ts: Date.now()})
+  }).catch(function(){});
+  var btn = document.getElementById('rotate-btn');
+  btn.textContent = 'Rotating...';
+  btn.disabled = true;
+  fetch('/api/v1/security/keys/rotate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({})
+  }).then(function(r){ return r.json(); }).then(function(j) {
+    var res = document.getElementById('rotate-result');
+    res.textContent = JSON.stringify(j, null, 2);
+    res.style.display = 'block';
+    btn.textContent = 'Rotate All Keys Now';
+    btn.disabled = false;
+  }).catch(function() {
+    btn.textContent = 'Rotate All Keys Now';
+    btn.disabled = false;
+  });
+}
+
+// Audit log link
+function auditLogClick(e) {
+  fetch('/api/v1/telemetry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'security_audit_log_viewed', ts: Date.now()})
+  }).catch(function(){});
+}
+
+// Pagehide dwell
+window.addEventListener('pagehide', function() {
+  fetch('/api/v1/telemetry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'security_page_exit', dwell_ms: Date.now() - _pageStart, ts: Date.now()})
+  }).catch(function(){});
+});
+</script>
+
+<script>
+(function(){
+  window.toggleUserPopup=function(e){
+    e.stopPropagation();
+    var p=document.getElementById('user-popup');
+    if(p)p.style.display=(p.style.display==='none'||!p.style.display)?'block':'none';
+  };
+  document.addEventListener('click',function(){
+    var p=document.getElementById('user-popup');
+    if(p)p.style.display='none';
+  });
+})();
+</script>
+{% endblock %}

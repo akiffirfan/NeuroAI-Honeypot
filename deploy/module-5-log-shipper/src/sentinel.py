@@ -66,7 +66,8 @@ def _suppressed(src_ip: str, category: str) -> bool:
 # Everything else fires — cooldown per (src_ip, event_type) prevents floods.
 # ---------------------------------------------------------------------------
 _NOISE_EVENTS = {"http.get.health", "cowrie.session.closed", "api.startup",
-                 "cowrie.session.connect", "smtp.session.connect", "smtp.ehlo"}
+                 "cowrie.session.connect", "smtp.session.connect", "smtp.ehlo",
+                 "smb.server.started"}     # Module 8 startup sentinel — not an attacker action
 
 # Events that always alert — no cooldown suppression regardless of (IP, category)
 _NO_COOLDOWN_EVENTS = {
@@ -77,6 +78,7 @@ _NO_COOLDOWN_EVENTS = {
     "http.lure.data_exfil",             # attacker downloaded a lure file — always alert
     "http.canarytoken.fired",           # out-of-band canarytoken hit — always alert
     "cross_sensor.credential_relay",    # SSH config.yaml read → MariaDB connect — always alert
+    "smb.ntlmv2.hash",                  # NTLMv2 hash capture — highest-value SMB event, always alert
 }
 
 
@@ -171,6 +173,30 @@ def _build_reason(event_type: str, row: dict, payload: dict) -> str:
         return f"SMTP VRFY/EXPN enumeration — user={user}"
     if event_type.startswith("smtp."):
         return f"SMTP: {event_type} from {(row.get('src_ip') or '').split('/')[0]}"
+    # SMB sensor events (Module 8)
+    if event_type == "smb.ntlmv2.hash":
+        nt_hash  = payload.get("ntlmv2_hash") or ""
+        domain   = payload.get("domain") or ""
+        user_str = f"{domain}\\{username}" if domain else username
+        hash_pre = nt_hash[:60] + "..." if len(nt_hash) > 60 else nt_hash
+        return f"NTLMv2 hash captured — {user_str} — {hash_pre}"
+    if event_type == "smb.enum.shares":
+        return f"SMB share enumeration — user={username or '(anonymous)'}"
+    if event_type == "smb.auth.attempt":
+        return f"SMB auth attempt — user={username or '(anonymous)'}"
+    if event_type == "smb.pipe.connect":
+        pipe = payload.get("pipe_name") or "(unknown)"
+        return f"SMB named pipe opened — {pipe} (RPC enumeration)"
+    if event_type == "smb.file.read":
+        fpath = payload.get("path") or payload.get("file_name") or "(unknown)"
+        return f"SMB file read attempt — {fpath}"
+    if event_type == "smb.file.write":
+        fpath = payload.get("path") or payload.get("file_name") or "(unknown)"
+        return f"SMB file WRITE attempt — {fpath} (returned ACCESS_DENIED)"
+    if event_type == "smb.connect":
+        return f"SMB connection probe from {(row.get('src_ip') or '').split('/')[0]}"
+    if event_type.startswith("smb."):
+        return f"SMB probe: {event_type}"
     # Fallback — show raw event_type so nothing is ever blank
     return event_type
 
@@ -228,6 +254,14 @@ def _should_alert(row: dict) -> tuple:
         "http.get.xss.attempt":       "web.xss",
         "http.bruteforce.detected":   "web.bruteforce",
         "http.prompt.injection":      "web.prompt_injection",
+        # SMB sensor categories (Module 8) — each gets its own cooldown bucket
+        "smb.ntlmv2.hash":    "smb.hash",    # no-cooldown anyway (in _NO_COOLDOWN_EVENTS)
+        "smb.auth.attempt":   "smb",          # collapses with smb.connect per IP
+        "smb.connect":        "smb",
+        "smb.enum.shares":    "smb.enum",     # separate bucket — distinct recon step
+        "smb.pipe.connect":   "smb.pipe",     # RPC enumeration — separate bucket
+        "smb.file.read":      "smb.file",
+        "smb.file.write":     "smb.file",     # collapses with smb.file.read per IP
     }
     if event_type in _SNARE_CATEGORIES:
         cooldown_category = _SNARE_CATEGORIES[event_type]
@@ -298,6 +332,14 @@ def _build_message(row: dict, reason: str) -> str:
         header = "🚨📦 <b>MALWARE DOWNLOAD CAPTURED</b>"
     elif event_type == "cowrie.login.success":
         header = "🚨✅ <b>SSH LOGIN SUCCESS</b>"
+    elif event_type == "smb.ntlmv2.hash":
+        header = "🪟🔑 <b>SMB HASH CAPTURED — NTLMv2</b>"
+    elif event_type == "smb.file.write":
+        header = "🪟📁 <b>SMB WRITE ATTEMPT</b>"
+    elif event_type in ("smb.enum.shares", "smb.pipe.connect"):
+        header = "🪟📁 <b>SMB SHARE PROBE</b>"
+    elif event_type.startswith("smb."):
+        header = "🪟📁 <b>SMB SHARE PROBE</b>"
     else:
         header = "🚨 <b>Honeypot Alert</b>"
 

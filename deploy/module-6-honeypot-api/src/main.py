@@ -230,6 +230,13 @@ _LURE_PATHS = {
     "/api/v1/training/jobs/script-upload",  # malware capture — init script upload
     "/settings/integrations",              # SSRF webhook lure
     "/api/v1/integrations/webhook/test",   # SSRF webhook delivery endpoint
+    "/settings/security",                  # security settings — MFA disable / session revoke lures
+    "/api/v1/security/mfa/toggle",         # MFA disable password capture
+    "/api/v1/security/session/revoke",     # session revocation attempt
+    "/api/v1/security/allowlist/add",      # CIDR submission — captures attacker network intel
+    "/api/v1/security/keys/rotate",        # key rotation event
+    "/api/v1/security/audit-log",          # audit log access — interest signal
+    "/status",                             # public status page — scanner exposure
 }
 
 # Known scanner User-Agent fragments for bot scoring
@@ -2553,6 +2560,207 @@ async def script_upload(request: Request, file: UploadFile = File(...)):
         "status": "queued",
         "message": "Init script accepted. Job queued on neuro-train-01.",
     })
+
+
+# ---------------------------------------------------------------------------
+# Routes — /settings/security and /status (added Round 30)
+# ---------------------------------------------------------------------------
+
+@app.get("/settings/security")
+async def settings_security_page(request: Request):
+    if not _session_ok(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("settings_security.html", {"request": request})
+
+
+@app.post("/api/v1/security/mfa/toggle")
+async def security_mfa_toggle(request: Request):
+    """
+    MFA disable endpoint — captures password submitted in modal.
+    Always returns 401-equivalent (re-auth required) so flow feels incomplete.
+    Password stored in the password column for Sentinel credential replay detection.
+    """
+    if not _session_ok(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    attempted_password = str(body.get("password", ""))[:256]
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "security.mfa_toggle_attempt",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": "m.chen@neuro.ai",
+        "password": attempted_password if attempted_password else None,
+        "payload": json.dumps({
+            "attempted_password": attempted_password,
+            "duration_hours": body.get("duration_hours", 24),
+        }),
+        "raw_log": None,
+        "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+    return JSONResponse(
+        {
+            "ok": False,
+            "mfa_enabled": True,
+            "message": "2FA status unchanged — re-authentication required via identity provider.",
+        },
+        status_code=401,
+    )
+
+
+@app.post("/api/v1/security/session/revoke")
+async def security_session_revoke(request: Request):
+    """Logs session revocation attempt with session_ref. Returns fake success."""
+    if not _session_ok(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    session_ref = str(body.get("session_ref", ""))[:64]
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "security.session_revoke_attempt",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({"session_ref": session_ref}),
+        "raw_log": None,
+        "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+    return JSONResponse({"ok": True, "revoked": True, "session_ref": session_ref})
+
+
+@app.post("/api/v1/security/allowlist/add")
+async def security_allowlist_add(request: Request):
+    """
+    Captures attacker-submitted CIDR — reveals their own network block or
+    their target network intelligence. Logs to honeypot_events.
+    """
+    if not _session_ok(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    cidr = str(body.get("cidr", ""))[:64]
+    label = str(body.get("label", ""))[:128]
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "security.allowlist_probe",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({"cidr": cidr, "label": label}),
+        "raw_log": None,
+        "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+    return JSONResponse({"ok": True, "entries": 4, "cidr": cidr, "effective_at": "immediately"})
+
+
+@app.post("/api/v1/security/keys/rotate")
+async def security_keys_rotate(request: Request):
+    """Logs key rotation attempt. Returns fake rotation result with sample key prefix."""
+    if not _session_ok(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    src_ip = _extract_src_ip(request)
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "security.key_rotation_attempt",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({"action": "rotate_all_keys"}),
+        "raw_log": None,
+        "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+    sample_suffix = "".join(random.choices("abcdef0123456789", k=16))
+    return JSONResponse({
+        "rotated": True,
+        "count": 4,
+        "new_prefix": "nro-",
+        "sample_key": f"nro-{sample_suffix}",
+        "effective_at": "2026-06-05T00:00:00Z",
+        "note": "Old keys invalidated. Update CI/CD pipelines and Cowrie automation scripts.",
+    })
+
+
+@app.get("/api/v1/security/audit-log")
+async def security_audit_log(request: Request):
+    """Returns fixture audit log. Access itself is a high-value interest signal."""
+    if not _session_ok(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    src_ip = _extract_src_ip(request)
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "security.audit_log_viewed",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({"action": "audit_log_export_request"}),
+        "raw_log": None,
+        "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+    return JSONResponse({
+        "entries": [
+            {"ts": "2026-06-04T22:09:17Z", "actor": "m.chen@neuro.ai",      "action": "login_success",      "src_ip": "192.168.1.45",  "result": "ok"},
+            {"ts": "2026-06-04T18:31:04Z", "actor": "priya.nair@neuro.ai",  "action": "api_key_created",    "src_ip": "192.168.1.48",  "result": "ok"},
+            {"ts": "2026-06-04T09:14:22Z", "actor": "m.chen@neuro.ai",      "action": "login_success",      "src_ip": "192.168.1.45",  "result": "ok"},
+            {"ts": "2026-06-03T03:14:09Z", "actor": "m.chen@neuro.ai",      "action": "ssh_key_used",       "src_ip": "185.234.219.4", "result": "ok", "flag": "unusual_ip"},
+            {"ts": "2026-06-02T16:44:51Z", "actor": "svc-deploy",           "action": "token_refreshed",    "src_ip": "10.31.4.22",    "result": "ok"},
+            {"ts": "2026-06-02T11:03:28Z", "actor": "priya.nair@neuro.ai",  "action": "model_deployed",     "src_ip": "192.168.1.48",  "result": "ok"},
+            {"ts": "2026-06-01T20:17:43Z", "actor": "svc-deploy",           "action": "pipeline_run",       "src_ip": "10.31.4.22",    "result": "ok"},
+            {"ts": "2026-06-01T14:55:09Z", "actor": "m.chen@neuro.ai",      "action": "2fa_verified",       "src_ip": "192.168.1.45",  "result": "ok"},
+            {"ts": "2026-05-31T22:09:11Z", "actor": "m.chen@neuro.ai",      "action": "ssh_key_used",       "src_ip": "10.31.4.1",     "result": "ok"},
+            {"ts": "2026-05-31T09:41:33Z", "actor": "priya.nair@neuro.ai",  "action": "login_success",      "src_ip": "192.168.1.48",  "result": "ok"},
+            {"ts": "2026-05-30T17:28:55Z", "actor": "svc-deploy",           "action": "key_rotation",       "src_ip": "10.31.4.22",    "result": "ok"},
+            {"ts": "2026-05-30T08:12:04Z", "actor": "m.chen@neuro.ai",      "action": "workspace_accessed", "src_ip": "192.168.1.45",  "result": "ok"},
+            {"ts": "2026-05-29T21:30:47Z", "actor": "priya.nair@neuro.ai",  "action": "dataset_exported",   "src_ip": "192.168.1.48",  "result": "ok"},
+            {"ts": "2026-05-29T14:05:11Z", "actor": "svc-deploy",           "action": "token_refreshed",    "src_ip": "10.31.4.22",    "result": "ok"},
+            {"ts": "2026-05-28T07:44:29Z", "actor": "m.chen@neuro.ai",      "action": "login_success",      "src_ip": "192.168.1.45",  "result": "ok"},
+            {"ts": "2026-05-27T19:22:18Z", "actor": "priya.nair@neuro.ai",  "action": "api_key_revoked",    "src_ip": "192.168.1.48",  "result": "ok"},
+            {"ts": "2026-05-27T11:08:53Z", "actor": "m.chen@neuro.ai",      "action": "settings_changed",   "src_ip": "192.168.1.45",  "result": "ok"},
+            {"ts": "2026-05-26T16:50:37Z", "actor": "svc-deploy",           "action": "pipeline_run",       "src_ip": "10.31.4.22",    "result": "ok"},
+            {"ts": "2026-05-26T09:31:04Z", "actor": "priya.nair@neuro.ai",  "action": "login_success",      "src_ip": "192.168.1.48",  "result": "ok"},
+            {"ts": "2026-05-25T22:17:42Z", "actor": "m.chen@neuro.ai",      "action": "2fa_verified",       "src_ip": "192.168.1.45",  "result": "ok"},
+        ]
+    })
+
+
+@app.get("/status")
+async def status_page(request: Request):
+    """Public status page — no session gate. Maximum scanner exposure."""
+    return templates.TemplateResponse("status.html", {"request": request})
 
 
 # ---------------------------------------------------------------------------
