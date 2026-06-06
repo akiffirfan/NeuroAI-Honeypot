@@ -261,52 +261,6 @@
           <div id="rotate-result" class="mt-3 bg-elevated rounded-lg p-3 font-mono text-xs text-gray-300 whitespace-pre-wrap" style="display:none;"></div>
         </div>
 
-        <!-- Card 5: Audit Log -->
-        <div class="bg-surface border border-border rounded-xl p-5">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-xs font-semibold uppercase tracking-widest text-faint">Recent Audit Log</h3>
-            <a href="/api/v1/security/audit-log" onclick="auditLogClick(event)" class="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors">View full log &rarr;</a>
-          </div>
-          <div class="space-y-1.5 text-xs">
-
-            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2">
-              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-04 22:09</span>
-              <span class="text-gray-200 flex-1">m.chen@neuro.ai</span>
-              <span class="text-muted flex-1">Login success</span>
-              <span class="font-mono text-faint">192.168.1.45</span>
-            </div>
-
-            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2">
-              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-04 18:31</span>
-              <span class="text-gray-200 flex-1">priya.nair@neuro.ai</span>
-              <span class="text-muted flex-1">API key created</span>
-              <span class="font-mono text-faint">192.168.1.48</span>
-            </div>
-
-            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2">
-              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-04 09:14</span>
-              <span class="text-gray-200 flex-1">m.chen@neuro.ai</span>
-              <span class="text-muted flex-1">Login success</span>
-              <span class="font-mono text-faint">192.168.1.45</span>
-            </div>
-
-            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2 border border-yellow-500/20">
-              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-03 03:14</span>
-              <span class="text-gray-200 flex-1">m.chen@neuro.ai</span>
-              <span class="text-muted flex-1">SSH key used</span>
-              <span class="font-mono text-faint">185.234.219.4</span>
-              <span class="text-[9px] text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 px-1.5 py-0.5 rounded-full flex-shrink-0">Unusual IP</span>
-            </div>
-
-            <div class="flex items-center gap-3 bg-elevated rounded-lg px-3 py-2">
-              <span class="font-mono text-faint w-36 flex-shrink-0">2026-06-02 16:44</span>
-              <span class="text-gray-200 flex-1">svc-deploy</span>
-              <span class="text-muted flex-1">Token refreshed</span>
-              <span class="font-mono text-faint">10.31.4.22</span>
-            </div>
-
-          </div>
-        </div>
 
       </div>
     </main>
@@ -455,15 +409,6 @@ function rotateKeys() {
     btn.textContent = 'Rotate All Keys Now';
     btn.disabled = false;
   });
-}
-
-// Audit log link
-function auditLogClick(e) {
-  fetch('/api/v1/telemetry', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({type: 'security_audit_log_viewed', ts: Date.now()})
-  }).catch(function(){});
 }
 
 // Pagehide dwell

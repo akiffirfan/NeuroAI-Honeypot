@@ -171,6 +171,22 @@ def _pg_connect_with_retry(max_attempts: int = 10, delay: float = 3.0) -> None:
 
 _redis_client: Optional[redis_lib.Redis] = None
 
+# Persistent httpx client for HoneyDash pushes — reuses TCP connections instead of
+# opening a new socket per event, eliminating burst-then-silence patterns in live feed.
+_hd_client: Optional[httpx.AsyncClient] = None
+
+
+def _ensure_hd_client() -> Optional[httpx.AsyncClient]:
+    global _hd_client
+    if not HONEYDASH_URL or not SENSOR_API_KEY:
+        return None
+    if _hd_client is None:
+        _hd_client = httpx.AsyncClient(
+            timeout=3.0,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
+    return _hd_client
+
 
 def _get_redis() -> redis_lib.Redis:
     global _redis_client
@@ -1055,14 +1071,16 @@ async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None
             if dl_file:
                 honeydash_event["download_url"] = f"/api/v1/data/exports/download?file={dl_file}"
 
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.post(
-                f"{HONEYDASH_URL}/api/ingest/batch",
-                json=[honeydash_event],
-                headers={"X-Sensor-Key": SENSOR_API_KEY},
-            )
-            if resp.status_code not in (200, 201, 202, 204):
-                logger.warning("honeydash_push_non2xx", status=resp.status_code)
+        client = _ensure_hd_client()
+        if not client:
+            return
+        resp = await client.post(
+            f"{HONEYDASH_URL}/api/ingest/batch",
+            json=[honeydash_event],
+            headers={"X-Sensor-Key": SENSOR_API_KEY},
+        )
+        if resp.status_code not in (200, 201, 202, 204):
+            logger.warning("honeydash_push_non2xx", status=resp.status_code)
     except Exception as exc:
         logger.warning("honeydash_push_error", error=str(exc))
 
@@ -2738,7 +2756,7 @@ async def security_mfa_toggle(request: Request):
     except Exception:
         body = {}
     attempted_password = str(body.get("password", ""))[:256]
-    _log_event({
+    ev = {
         "event_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc),
         "sensor": "api",
@@ -2755,7 +2773,9 @@ async def security_mfa_toggle(request: Request):
         "raw_log": None,
         "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
         **_lookup_geo(src_ip),
-    })
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "MFA Disable Attempt"))
     return JSONResponse(
         {
             "ok": False,
@@ -2777,7 +2797,7 @@ async def security_session_revoke(request: Request):
     except Exception:
         body = {}
     session_ref = str(body.get("session_ref", ""))[:64]
-    _log_event({
+    ev = {
         "event_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc),
         "sensor": "api",
@@ -2791,7 +2811,9 @@ async def security_session_revoke(request: Request):
         "raw_log": None,
         "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
         **_lookup_geo(src_ip),
-    })
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Session Revoke Probe"))
     return JSONResponse({"ok": True, "revoked": True, "session_ref": session_ref})
 
 
@@ -2810,7 +2832,7 @@ async def security_allowlist_add(request: Request):
         body = {}
     cidr = str(body.get("cidr", ""))[:64]
     label = str(body.get("label", ""))[:128]
-    _log_event({
+    ev = {
         "event_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc),
         "sensor": "api",
@@ -2824,7 +2846,9 @@ async def security_allowlist_add(request: Request):
         "raw_log": None,
         "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
         **_lookup_geo(src_ip),
-    })
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Allowlist Probe"))
     return JSONResponse({"ok": True, "entries": 4, "cidr": cidr, "effective_at": "immediately"})
 
 
@@ -2834,7 +2858,7 @@ async def security_keys_rotate(request: Request):
     if not _session_ok(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     src_ip = _extract_src_ip(request)
-    _log_event({
+    ev = {
         "event_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc),
         "sensor": "api",
@@ -2848,7 +2872,9 @@ async def security_keys_rotate(request: Request):
         "raw_log": None,
         "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
         **_lookup_geo(src_ip),
-    })
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Key Rotation Probe"))
     sample_suffix = "".join(random.choices("abcdef0123456789", k=16))
     return JSONResponse({
         "rotated": True,
@@ -2866,7 +2892,7 @@ async def security_audit_log(request: Request):
     if not _session_ok(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     src_ip = _extract_src_ip(request)
-    _log_event({
+    ev = {
         "event_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc),
         "sensor": "api",
@@ -2880,7 +2906,9 @@ async def security_audit_log(request: Request):
         "raw_log": None,
         "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
         **_lookup_geo(src_ip),
-    })
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Audit Log Access"))
     return JSONResponse({
         "entries": [
             {"ts": "2026-06-04T22:09:17Z", "actor": "m.chen@neuro.ai",      "action": "login_success",      "src_ip": "192.168.1.45",  "result": "ok"},

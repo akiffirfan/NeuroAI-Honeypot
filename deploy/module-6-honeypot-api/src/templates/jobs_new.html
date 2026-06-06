@@ -18,15 +18,7 @@
 
     <div class="px-4 py-4 border-b border-border">
       <div class="flex items-center gap-2.5">
-        <svg class="w-6 h-6 flex-shrink-0" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect width="28" height="28" rx="6" fill="#6366f1" fill-opacity="0.12"/>
-          <circle cx="14" cy="14" r="4.5" stroke="#6366f1" stroke-width="1.6" fill="none"/>
-          <circle cx="14" cy="14" r="1.8" fill="#6366f1"/>
-          <line x1="14" y1="2" x2="14" y2="8" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
-          <line x1="14" y1="20" x2="14" y2="26" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
-          <line x1="2" y1="14" x2="8" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
-          <line x1="20" y1="14" x2="26" y2="14" stroke="#6366f1" stroke-width="1.4" stroke-linecap="round"/>
-        </svg>
+        <img src="/static/images/logo.png" alt="Neuro" style="width:28px;height:28px;object-fit:contain;flex-shrink:0;" />
         <div>
           <span class="text-white font-semibold text-sm tracking-tight">neuro</span>
           <span class="ml-1.5 text-[10px] font-mono text-faint bg-elevated border border-border px-1.5 py-0.5 rounded">v2.3</span>
@@ -471,8 +463,29 @@
   }
 
   var _form = document.getElementById('job-form');
+  var _jobNameEl = document.getElementById('job-name');
+  if (_jobNameEl) {
+    _jobNameEl.addEventListener('input', function() {
+      _jobNameEl.classList.remove('border-red-500');
+      var err = document.getElementById('job-name-error');
+      if (err) err.remove();
+    });
+  }
   if (_form) {
-    _form.addEventListener('submit', function() {
+    _form.addEventListener('submit', function(e) {
+      if (_jobNameEl && !_jobNameEl.value.trim()) {
+        e.preventDefault();
+        _jobNameEl.classList.add('border-red-500');
+        if (!document.getElementById('job-name-error')) {
+          var err = document.createElement('p');
+          err.id = 'job-name-error';
+          err.className = 'mt-1 text-[11px] text-red-400';
+          err.textContent = 'Job name is required.';
+          _jobNameEl.parentNode.appendChild(err);
+        }
+        _jobNameEl.focus();
+        return;
+      }
       _formSubmitted = true;
       fetch('/api/v1/telemetry', {
         method: 'POST',

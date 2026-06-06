@@ -28,8 +28,18 @@ TELEGRAM_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
 POSTGRES_DSN        = os.environ["POSTGRES_DSN"]
 POLL_INTERVAL       = int(os.environ.get("POLL_INTERVAL", "10"))
 ALERT_COOLDOWN_SECS = int(os.environ.get("ALERT_COOLDOWN_SECS", "60"))
-# Routine nav pages (dashboard, runs, models, etc.) — one alert per IP per 30 min
-_ROUTINE_COOLDOWN_SECS = 1800
+# Three-tier HTTP alert cooldown:
+#   Tier 1 — always-alert:  /admin, /api-keys, /artifacts, /settings/*  →  0s (no suppression)
+#   Tier 2 — sensitive:     /jobs/new, /models, /datasets, /runs         →  300s
+#   Tier 3 — routine:       /dashboard, /notifications, generic probes   →  1800s
+_SENSITIVE_COOLDOWN_SECS = 300
+_ROUTINE_COOLDOWN_SECS   = 1800
+
+_HTTP_TIER_COOLDOWN = {
+    "http.always_alert": 0,
+    "http.sensitive":    _SENSITIVE_COOLDOWN_SECS,
+    "http.routine":      _ROUTINE_COOLDOWN_SECS,
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,7 +81,8 @@ _NOISE_EVENTS = {"http.get.health", "cowrie.session.closed", "api.startup",
                  "cowrie.session.connect", "smtp.session.connect", "smtp.ehlo",
                  "smb.server.started",              # Module 8 startup sentinel — not an attacker action
                  "http.post.api.v1.telemetry",      # metrics.js beacons — not attacker actions
-                 "http.get.api.v1.telemetry"}       # same, GET variant
+                 "http.get.api.v1.telemetry",       # same, GET variant
+                 "http.post.telemetry"}             # alternate telemetry route name
 
 # Events that always alert — no cooldown suppression regardless of (IP, category)
 _NO_COOLDOWN_EVENTS = {
@@ -315,14 +326,21 @@ def _should_alert(row: dict) -> tuple:
     }
     if event_type in _SNARE_CATEGORIES:
         cooldown_category = _SNARE_CATEGORIES[event_type]
-    elif event_type in {
-        "http.get.dashboard", "http.get.runs", "http.get.models",
-        "http.get.datasets", "http.get.notifications", "http.get.pipelines",
-        "http.get.static",
-    }:
-        cooldown_category = "http.routine"
     elif event_type.startswith("http."):
-        cooldown_category = "http"
+        # Strip "http.<method>." prefix to get the path portion
+        parts = event_type.split(".", 2)
+        et_path = parts[2] if len(parts) > 2 else ""
+        # Tier 1 — always-alert: admin, api-keys, artifacts, settings/*
+        if any(kw in et_path for kw in ("admin", "api-keys", "artifacts", "settings.")):
+            cooldown_category = "http.always_alert"
+        # Tier 2 — sensitive (5-min cooldown): jobs/new, models, datasets, runs
+        elif any(et_path == kw or et_path.startswith(kw + ".") for kw in ("jobs.new", "models", "datasets", "runs")):
+            cooldown_category = "http.sensitive"
+        # Tier 3 — routine (30-min cooldown): dashboard, notifications, pipelines, static, generic probes
+        elif any(kw in et_path for kw in ("dashboard", "notifications", "pipelines", "static")):
+            cooldown_category = "http.routine"
+        else:
+            cooldown_category = "http"
     elif event_type == "cowrie.login.failed":
         _PORT_PROTO = {2222: "ssh", 21: "ftp", 23: "telnet", 25: "smtp", 6379: "redis", 3306: "mysql"}
         cooldown_category = f"login.{_PORT_PROTO.get(dst_port, 'other')}"
@@ -472,8 +490,21 @@ _QUERY = """
            username, password, payload::text, sensor, created_at,
            geo_country, geo_city, geo_org, is_tor
     FROM honeypot_events
-    WHERE created_at > %s
-    ORDER BY created_at ASC
+    WHERE (
+        -- Late-arriving events written after the last poll (before watermark timestamp)
+        (created_at > %s AND created_at < %s)
+        OR
+        -- Cursor-forward: events at or after watermark, past last processed event_id
+        ((created_at, event_id::text) > (%s, %s))
+    )
+    AND event_type NOT IN (
+        'cowrie.session.closed', 'http.get.health', 'api.startup',
+        'smb.server.started', 'smtp.session.connect', 'smtp.ehlo',
+        'http.post.api.v1.telemetry', 'http.get.api.v1.telemetry',
+        'http.post.telemetry'
+    )
+    AND (event_type != 'cowrie.session.connect' OR dst_port = 3306)
+    ORDER BY created_at ASC, event_id::text ASC
     LIMIT 500
 """
 
@@ -614,17 +645,18 @@ def _connect_pg() -> psycopg2.extensions.connection:
     raise SystemExit(1)
 
 
-def _poll(conn, since: datetime) -> list:
-    # Look back 120 s behind the watermark: log_shipper may insert rows with a
-    # created_at from the event file that is older than the current watermark.
-    # The seen-set in the main loop deduplicates rows already processed.
+def _poll(conn, since: datetime, last_event_id: str = "") -> list:
+    # lookback catches late-arriving rows written after the previous poll whose
+    # file timestamp predates the watermark.  The cursor (since, last_event_id)
+    # guarantees forward progress even when thousands of events share the same
+    # timestamp — a same-timestamp flood can no longer stall the watermark.
     lookback = since - timedelta(seconds=120)
     with conn.cursor() as cur:
-        cur.execute(_QUERY, (lookback,))
+        cur.execute(_QUERY, (lookback, since, since, last_event_id))
         rows = cur.fetchall()
     results = [dict(zip(_COLS, r)) for r in rows]
     if results:
-        log.info("poll found %d event(s) since %s", len(results), lookback.isoformat())
+        log.info("poll found %d event(s) since %s", len(results), since.isoformat())
         for r in results:
             log.info("  event_type=%-35s  src_ip=%-16s  dst_port=%s",
                      r.get("event_type"), r.get("src_ip"), r.get("dst_port"))
@@ -653,8 +685,10 @@ def main() -> None:
     # On startup, look back 5 minutes to catch events that arrived while
     # sentinel was down (e.g. after a container restart during an active attack).
     since = datetime.now(timezone.utc) - timedelta(minutes=5)
-    # Dedup set — keeps event_ids seen this session to avoid double-alerts
-    # on the rare case the same row appears in two consecutive polls.
+    # Cursor tiebreaker — advances within same-timestamp batches so a flood of
+    # events sharing one timestamp cannot permanently stall the watermark.
+    last_event_id: str = ""
+    # Dedup set — catches late-arriving rows that reappear in the lookback window.
     seen: set = set()
 
     log.info("polling for events since %s", since.isoformat())
@@ -664,30 +698,34 @@ def main() -> None:
 
     while True:
         try:
-            rows = _poll(conn, since)
+            rows = _poll(conn, since, last_event_id)
 
             new_since = since
+            new_last_id = last_event_id
             for row in rows:
                 eid = row["event_id"]
                 if eid in seen:
                     continue
                 seen.add(eid)
 
-                # Advance watermark
+                # Advance composite cursor (timestamp + event_id tiebreaker)
                 row_ts = row.get("created_at")
                 if row_ts is not None:
-                    # psycopg2 returns aware or naive datetime — normalize
                     if hasattr(row_ts, "tzinfo") and row_ts.tzinfo is None:
                         row_ts = row_ts.replace(tzinfo=timezone.utc)
                     if row_ts > new_since:
                         new_since = row_ts
+                        new_last_id = eid
+                    elif row_ts == new_since and eid > new_last_id:
+                        new_last_id = eid
 
                 should, reason, category = _should_alert(row)
                 if should:
                     src_ip = row.get("src_ip") or ""
                     event_type = row.get("event_type", "")
-                    # No-cooldown events always fire regardless of suppression window
-                    cooldown = _ROUTINE_COOLDOWN_SECS if category == "http.routine" else ALERT_COOLDOWN_SECS
+                    # No-cooldown events always fire regardless of suppression window.
+                    # HTTP pages use the 3-tier map; all others use the global cooldown.
+                    cooldown = _HTTP_TIER_COOLDOWN.get(category, ALERT_COOLDOWN_SECS)
                     if event_type in _NO_COOLDOWN_EVENTS or not _suppressed(src_ip, category, cooldown):
                         send_alert(row, reason, category)
 
@@ -696,6 +734,7 @@ def main() -> None:
                 seen.clear()   # safe: worst case we re-alert one cooldown-window of events
 
             since = new_since
+            last_event_id = new_last_id
 
             # Cross-sensor correlation checks every 5 polls (~50s)
             _loop_count += 1
@@ -713,10 +752,12 @@ def main() -> None:
                 pass
             conn = _connect_pg()
 
-        # Heartbeat every 5 minutes so the log shows sentinel is alive
+        # Heartbeat every 5 minutes — logs + Telegram so silence is obvious
         now_m = time.monotonic()
         if now_m - _last_heartbeat >= 300:
+            ts_str = since.strftime("%H:%M:%S UTC")
             log.info("heartbeat — sentinel alive, watermark=%s", since.isoformat())
+            _send(f"💓 <b>Sentinel heartbeat</b> — monitoring active\n<b>Watermark:</b> {ts_str}")
             _last_heartbeat = now_m
 
         time.sleep(POLL_INTERVAL)

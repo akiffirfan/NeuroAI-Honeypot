@@ -101,21 +101,29 @@
       </a>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-6">
-      <div class="bg-surface border border-border rounded-xl shadow-card overflow-hidden">
-        <div class="px-4 py-3 border-b border-border flex items-center justify-between">
-          <span class="text-xs font-semibold text-white">All Runs</span>
-          <span class="text-[10px] text-faint font-mono" id="run-count"></span>
+    <main style="flex:1;overflow-y:auto;padding:24px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:16px;">
+        <button class="filter-btn active" data-filter="all" onclick="filterRuns('all')">All</button>
+        <button class="filter-btn" data-filter="running" onclick="filterRuns('running')">Running</button>
+        <button class="filter-btn" data-filter="failed" onclick="filterRuns('failed')">Failed</button>
+        <button class="filter-btn" data-filter="queued" onclick="filterRuns('queued')">Queued</button>
+        <button class="filter-btn" data-filter="completed" onclick="filterRuns('completed')">Completed</button>
+      </div>
+      <div class="card" style="overflow:hidden;">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--c-border);">
+          <h3 style="font-size:14px;font-weight:600;color:#fff;">Training Runs</h3>
+          <p style="font-size:11px;color:var(--c-faint);margin-top:2px;">All training jobs in workspace neuro-prod</p>
         </div>
-        <table class="w-full text-xs">
+        <table style="width:100%;border-collapse:collapse;">
           <thead>
-            <tr class="border-b border-border">
-              <th class="px-4 py-2.5 text-left font-medium text-faint">Run ID</th>
-              <th class="px-4 py-2.5 text-left font-medium text-faint">Model</th>
-              <th class="px-4 py-2.5 text-left font-medium text-faint">Status</th>
-              <th class="px-4 py-2.5 text-left font-medium text-faint">Progress</th>
-              <th class="px-4 py-2.5 text-left font-medium text-faint">Node</th>
-              <th class="px-4 py-2.5 text-left font-medium text-faint">Started</th>
+            <tr style="border-bottom:1px solid var(--c-border);background:rgba(20,23,33,0.6);">
+              <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Run</th>
+              <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Model</th>
+              <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Status</th>
+              <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Started</th>
+              <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Duration</th>
+              <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Loss</th>
+              <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">GPU</th>
             </tr>
           </thead>
           <tbody id="runs-tbody"></tbody>
@@ -124,61 +132,177 @@
     </main>
   </div>
 </div>
+
+<!-- Run Detail Modal -->
+<div id="run-detail-modal" class="modal-overlay hidden" style="display:none;">
+  <div class="modal-backdrop" onclick="closeRunModal()"></div>
+  <div class="modal-panel" style="max-width:580px;">
+    <div class="card" style="padding:0;position:relative;overflow:hidden;">
+      <div class="accent-line"></div>
+      <div style="padding:20px 24px 16px;border-bottom:1px solid var(--c-border);display:flex;align-items:flex-start;justify-content:space-between;">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
+            <span id="rm-id" class="mono" style="font-size:13px;color:#06C0D8;font-weight:600;"></span>
+            <span id="rm-badge"></span>
+          </div>
+          <p id="rm-name" style="font-size:14px;font-weight:600;color:#E2E8F0;margin-bottom:3px;"></p>
+          <p style="font-size:11px;color:var(--c-faint);">Node: <span id="rm-node" class="mono" style="color:var(--c-muted);"></span></p>
+        </div>
+        <button onclick="closeRunModal()" style="color:var(--c-faint);transition:color 0.15s;" onmouseover="this.style.color='var(--c-muted)'" onmouseout="this.style.color='var(--c-faint)'">
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div style="padding:16px 24px;border-bottom:1px solid var(--c-border);">
+        <p style="font-size:10px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px;">Hyperparameters</p>
+        <div id="rm-hp" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;"></div>
+      </div>
+      <div style="padding:16px 24px;border-bottom:1px solid var(--c-border);">
+        <p style="font-size:10px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px;">Training Progress</p>
+        <div id="rm-metrics" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+      </div>
+      <div style="padding:16px 24px;">
+        <p style="font-size:10px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px;">Latest Checkpoint</p>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="flex:1;background:var(--c-elevated);border:1px solid var(--c-border);border-radius:8px;padding:9px 12px;overflow:hidden;">
+            <span id="rm-ckpt" class="mono" style="font-size:11px;color:var(--c-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;"></span>
+          </div>
+          <button id="rm-copy-btn" onclick="copyRunCkpt()" style="flex-shrink:0;font-size:12px;font-weight:500;padding:8px 14px;border-radius:8px;background:rgba(6,192,216,0.1);border:1px solid rgba(6,192,216,0.25);color:#06C0D8;cursor:pointer;white-space:nowrap;transition:all 0.15s;">Copy S3 Path</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
-(function() {
-  var RUNS = [
-    {id:'run-047',model:'LLM_FineTune_v4',status:'running',progress:73,node:'neuro-train-01.internal',started:'2026-05-31 22:14',gpu:4,loss:'1.243'},
-    {id:'run-046',model:'RLHF_Reward_v2',status:'completed',progress:100,node:'neuro-train-01.internal',started:'2026-05-30 08:00',gpu:2,loss:'0.871'},
-    {id:'run-045',model:'LLM_FineTune_v3',status:'failed',progress:31,node:'neuro-train-02.internal',started:'2026-05-29 14:22',gpu:4,loss:'2.104'},
-    {id:'run-044',model:'Embed_BioMed_v1',status:'completed',progress:100,node:'neuro-train-01.internal',started:'2026-05-27 09:10',gpu:1,loss:'0.334'},
-    {id:'run-043',model:'LLM_FineTune_v2',status:'completed',progress:100,node:'neuro-train-02.internal',started:'2026-05-25 03:00',gpu:8,loss:'0.912'},
-  ];
+const RUNS = [
+  { id:'run-001', name:'llm-finetune-v4-prod',    model:'nf-llm-70b-q4',    status:'running',   started:'2026-05-24 01:15', duration:'6h 42m',  loss:'0.0831', gpu:'97.4%',
+    hp:{lr:'2e-5',batch:'16',epochs:'3',optimizer:'AdamW',scheduler:'cosine',warmup:'500'},
+    ckpt:'s3://neuro-ml-artifacts/runs/run-001/checkpoints/step-4821/' },
+  { id:'run-002', name:'rlhf-reward-v2',            model:'nf-reward-v1',     status:'running',   started:'2026-05-24 03:58', duration:'4h 01m',  loss:'0.1204', gpu:'91.2%',
+    hp:{lr:'1e-5',batch:'8',epochs:'5',optimizer:'AdamW',scheduler:'linear',warmup:'200'},
+    ckpt:'s3://neuro-ml-artifacts/runs/run-002/checkpoints/step-2341/' },
+  { id:'run-003', name:'embed-biomedcorpus',        model:'nf-embed-v2',      status:'queued',    started:'—',               duration:'—',       loss:'—',      gpu:'—',
+    hp:{lr:'3e-5',batch:'32',epochs:'2',optimizer:'AdamW',scheduler:'cosine',warmup:'100'},
+    ckpt:'—' },
+  { id:'run-004', name:'gpt2-instruct-ablation',   model:'nf-llm-70b-q4',    status:'completed', started:'2026-05-23 18:00', duration:'8h 12m',  loss:'0.0612', gpu:'88.5%',
+    hp:{lr:'5e-5',batch:'16',epochs:'4',optimizer:'AdamW',scheduler:'cosine',warmup:'300'},
+    ckpt:'s3://neuro-ml-artifacts/runs/run-004/checkpoints/final/' },
+  { id:'run-005', name:'clip-vision-v3',            model:'nf-vision-clip-v3',status:'completed', started:'2026-05-23 09:30', duration:'11h 47m', loss:'0.0438', gpu:'79.1%',
+    hp:{lr:'1e-4',batch:'64',epochs:'10',optimizer:'AdamW',scheduler:'warmup_cosine',warmup:'1000'},
+    ckpt:'s3://neuro-ml-artifacts/runs/run-005/checkpoints/final/' },
+  { id:'run-006', name:'bert-squad-finetune',       model:'nf-bert-squad',    status:'failed',    started:'2026-05-24 00:04', duration:'0h 12m',  loss:'N/A',    gpu:'—',
+    hp:{lr:'3e-5',batch:'32',epochs:'3',optimizer:'AdamW',scheduler:'linear',warmup:'150'},
+    ckpt:'—' },
+  { id:'run-007', name:'LLM_FineTune_v4_Internal', model:'nf-llm-70b-q4',    status:'running',   started:'2026-05-23 22:41', duration:'8h 32m',  loss:'0.0941', gpu:'97.8%',
+    hp:{lr:'2e-5',batch:'16',epochs:'3',optimizer:'AdamW',scheduler:'cosine',warmup:'500'},
+    ckpt:'s3://neuro-ml-artifacts/runs/run-007/checkpoints/step-4103/' },
+  { id:'run-008', name:'medical-ner-bert-prod',     model:'nf-bert-squad',    status:'queued',    started:'—',               duration:'—',       loss:'—',      gpu:'—',
+    hp:{lr:'2e-5',batch:'32',epochs:'5',optimizer:'AdamW',scheduler:'linear',warmup:'200'},
+    ckpt:'—' },
+];
 
-  document.getElementById('run-count').textContent = RUNS.length + ' runs';
+const BADGE = {
+  running:   '<span class="badge badge-running"><span class="badge-dot pulse" style="background:#38BDF8;"></span>Running</span>',
+  completed: '<span class="badge badge-completed">Completed</span>',
+  failed:    '<span class="badge badge-failed">Failed</span>',
+  queued:    '<span class="badge badge-queued">Queued</span>',
+};
 
-  var STATUS_STYLE = {
-    running:   'background:#06C0D820;color:#06C0D8;border:1px solid #06C0D840',
-    completed: 'background:#22c55e20;color:#86efac;border:1px solid #22c55e40',
-    failed:    'background:#ef444420;color:#fca5a5;border:1px solid #ef444440',
-    queued:    'background:#f59e0b20;color:#fcd34d;border:1px solid #f59e0b40',
-  };
+function buildRow(r) {
+  return '<tr class="data-row" data-status="' + r.status + '" onclick="openRunModal(' + "'" + r.id + "'" + ')" style="cursor:pointer;border-bottom:1px solid rgba(30,34,53,0.6);">'
+    + '<td style="padding:13px 20px;"><div class="mono" style="font-size:12px;color:#06C0D8;">' + r.id + '</div><div style="font-size:11px;color:var(--c-faint);margin-top:1px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + r.name + '</div></td>'
+    + '<td style="padding:13px 20px;font-size:12px;color:var(--c-muted);" class="mono">' + r.model + '</td>'
+    + '<td style="padding:13px 20px;">' + BADGE[r.status] + '</td>'
+    + '<td style="padding:13px 20px;font-size:12px;color:var(--c-muted);" class="mono">' + r.started + '</td>'
+    + '<td style="padding:13px 20px;font-size:12px;color:var(--c-muted);" class="mono">' + r.duration + '</td>'
+    + '<td style="padding:13px 20px;font-size:12px;color:#E2E8F0;font-weight:500;" class="mono">' + r.loss + '</td>'
+    + '<td style="padding:13px 20px;font-size:12px;color:var(--c-muted);" class="mono">' + r.gpu + '</td>'
+    + '</tr>';
+}
 
-  var tbody = document.getElementById('runs-tbody');
-  RUNS.forEach(function(r) {
-    var tr = document.createElement('tr');
-    tr.className = 'border-b border-border hover:bg-elevated transition-colors cursor-pointer';
-    tr.innerHTML =
-      '<td class="px-4 py-3 font-mono text-accent">' + r.id + '</td>' +
-      '<td class="px-4 py-3 text-gray-200">' + r.model + '</td>' +
-      '<td class="px-4 py-3"><span class="text-[10px] font-semibold px-2 py-0.5 rounded-full" style="' + (STATUS_STYLE[r.status]||'') + '">' + r.status + '</span></td>' +
-      '<td class="px-4 py-3"><div class="flex items-center gap-2"><div class="w-20 h-1.5 bg-elevated rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:' + r.progress + '%;background:linear-gradient(90deg,#06C0D8,#8B5CF6)"></div></div><span class="text-faint font-mono">' + r.progress + '%</span></div></td>' +
-      '<td class="px-4 py-3 font-mono text-faint">' + r.node + '</td>' +
-      '<td class="px-4 py-3 text-faint">' + r.started + '</td>';
-    tbody.appendChild(tr);
-  });
+function renderRuns() {
+  const el = document.getElementById('runs-tbody');
+  if(el) el.innerHTML = RUNS.map(buildRow).join('');
+}
 
-  fetch('/api/v1/telemetry', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({type: 'page_view', page: 'runs', ts: Date.now()})
+function filterRuns(status) {
+  document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.filter===status); });
+  document.querySelectorAll('tr[data-status]').forEach(function(r) { r.style.display=(status==='all'||r.dataset.status===status)?'':'none'; });
+}
+
+// ── Run detail modal ──────────────────────────────────────────────────────────
+var _currentRunId = null;
+function openRunModal(id) {
+  var r = RUNS.find(function(x){ return x.id === id; });
+  if (!r) return;
+  _currentRunId = id;
+  document.getElementById('rm-id').textContent = r.id;
+  document.getElementById('rm-name').textContent = r.name;
+  document.getElementById('rm-badge').innerHTML = BADGE[r.status] || '';
+  document.getElementById('rm-node').textContent = (r.status === 'queued' || r.status === 'failed') ? '—' : 'neuro-train-01.internal';
+  var hp = r.hp;
+  document.getElementById('rm-hp').innerHTML = [
+    ['learning_rate', hp.lr], ['batch_size', hp.batch], ['epochs', hp.epochs],
+    ['optimizer', hp.optimizer], ['scheduler', hp.scheduler], ['warmup_steps', hp.warmup]
+  ].map(function(kv){ return '<div style="background:var(--c-elevated);border:1px solid var(--c-border);border-radius:8px;padding:8px 10px;"><p style="font-size:10px;color:var(--c-faint);margin-bottom:3px;">'+kv[0]+'</p><p class="mono" style="font-size:12px;color:#E2E8F0;">'+kv[1]+'</p></div>'; }).join('');
+  document.getElementById('rm-metrics').innerHTML = [
+    ['started', r.started], ['elapsed', r.duration], ['current_loss', r.loss], ['gpu_util', r.gpu]
+  ].map(function(kv){ return '<div style="background:var(--c-elevated);border:1px solid var(--c-border);border-radius:8px;padding:8px 10px;"><p style="font-size:10px;color:var(--c-faint);margin-bottom:3px;">'+kv[0]+'</p><p class="mono" style="font-size:12px;color:#E2E8F0;">'+kv[1]+'</p></div>'; }).join('');
+  document.getElementById('rm-ckpt').textContent = r.ckpt;
+  document.getElementById('rm-copy-btn').style.display = (r.ckpt === '—') ? 'none' : '';
+  var m = document.getElementById('run-detail-modal');
+  m.classList.remove('hidden'); m.style.display = 'flex';
+  fetch('/api/v1/telemetry', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({event_type:'run_detail_viewed', run_id:r.id, run_name:r.name, model:r.model})
   }).catch(function(){});
-})();
-</script>
+}
+function closeRunModal() {
+  var m = document.getElementById('run-detail-modal');
+  m.classList.add('hidden'); m.style.display = 'none';
+  _currentRunId = null;
+}
+function copyRunCkpt() {
+  var r = RUNS.find(function(x){ return x.id === _currentRunId; });
+  if (!r || r.ckpt === '—') return;
+  navigator.clipboard.writeText(r.ckpt).catch(function(){});
+  showToast('Checkpoint path copied to clipboard');
+  fetch('/api/v1/telemetry', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({event_type:'checkpoint_copy', run_id:r.id, ckpt:r.ckpt})
+  }).catch(function(){});
+}
 
-<script>
+// ── Toast ─────────────────────────────────────────────────────────────────────
+var _tt = null;
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg; t.classList.remove('hidden');
+  clearTimeout(_tt); _tt = setTimeout(function(){ t.classList.add('hidden'); }, 3200);
+}
+
+// ── User popup ────────────────────────────────────────────────────────────────
 (function(){
-  window.toggleUserPopup=function(e){
+  window.toggleUserPopup = function(e) {
     e.stopPropagation();
-    var p=document.getElementById('user-popup');
-    if(p)p.style.display=(p.style.display==='none'||!p.style.display)?'block':'none';
+    var p = document.getElementById('user-popup');
+    if(p) p.style.display = (p.style.display === 'none' || !p.style.display) ? 'block' : 'none';
   };
-  document.addEventListener('click',function(){
-    var p=document.getElementById('user-popup');
-    if(p)p.style.display='none';
+  document.addEventListener('click', function() {
+    var p = document.getElementById('user-popup');
+    if(p) p.style.display = 'none';
   });
 })();
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+renderRuns();
+fetch('/api/v1/telemetry', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({type: 'page_view', page: 'runs', ts: Date.now()})
+}).catch(function(){});
 </script>
 {% endblock %}

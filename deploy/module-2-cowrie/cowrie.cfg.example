@@ -11,10 +11,15 @@
 
 # ──────────────────────────────────────────────────────────
 # DECEPTION IDENTITY
-# Spoofed hostname shown in the shell prompt: user@neurocore-gpu01:~$
+# Spoofed hostname shown in the shell prompt: user@neuro-train-01:~$
 # Must match the COWRIE_HOSTNAME environment variable in docker-compose.yml
 # to avoid a mismatch between the SSH banner and the shell prompt.
-hostname = neurocore-gpu01
+hostname = neuro-train-01
+
+# Pre-authentication SSH banner (SSH_MSG_USERAUTH_BANNER).
+# Without this, Cowrie defaults to the container's /etc/issue.net (Debian 13 text).
+# Point to honeyfs so the banner matches our Ubuntu 22.04 identity.
+banner_file = /cowrie/honeyfs/etc/issue.net
 
 # SSH version string presented during handshake.
 # Ubuntu 22.04 LTS ships OpenSSH 8.9p1 — realistic for a GPU training server.
@@ -123,3 +128,16 @@ version = SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6
 # OpenCanary handles Telnet on port 23 in Module 3.
 [telnet]
 enabled = false
+
+# ──────────────────────────────────────────────────────────
+# FAKE SHELL KERNEL IDENTITY
+# Controls output of uname — section MUST be [shell], not [honeypot].
+# uname -s -v -n -r -m output order: kernel_name hostname kernel_version kernel_build_string hardware_platform
+# Result: Linux neuro-train-01 5.15.0-140-generic #162-Ubuntu SMP PREEMPT_DYNAMIC Mon Apr 14 09:32:41 UTC 2026 x86_64
+# Matches Ubuntu 22.04 LTS HWE kernel on a production A100/H100 GPU training node.
+[shell]
+kernel_name = Linux
+kernel_version = 5.15.0-140-generic
+kernel_build_string = #162-Ubuntu SMP PREEMPT_DYNAMIC Mon Apr 14 09:32:41 UTC 2026
+hardware_platform = x86_64
+operating_system = GNU/Linux

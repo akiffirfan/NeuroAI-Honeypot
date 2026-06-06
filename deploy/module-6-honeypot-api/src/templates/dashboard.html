@@ -18,7 +18,7 @@
   <aside style="width:220px;flex-shrink:0;background:var(--c-surface);border-right:1px solid var(--c-border);display:flex;flex-direction:column;position:relative;z-index:10;">
     <div style="padding:14px 16px;border-bottom:1px solid var(--c-border);">
       <div style="display:flex;align-items:center;gap:10px;">
-        <img src="/static/images/logo.png" class="logo-img" alt="Neuro" style="object-fit:contain;" />
+        <img src="/static/images/logo.png" alt="Neuro" style="width:28px;height:28px;object-fit:contain;flex-shrink:0;" />
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:14px;font-weight:700;color:#fff;letter-spacing:-0.02em;">neuro</span>
@@ -35,19 +35,18 @@
         <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 13a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1h-4a1 1 0 01-1-1v-6z"/></svg>
         Overview
       </button>
-      <button class="nav-item" id="nav-runs" onclick="switchTab('runs')">
+      <a href="/runs" class="nav-item" style="text-decoration:none;">
         <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
         Runs
-        <span id="runs-badge" style="margin-left:auto;font-size:9px;font-family:'JetBrains Mono',monospace;background:rgba(34,197,94,0.12);color:#86EFAC;padding:1px 6px;border-radius:99px;">3</span>
-      </button>
-      <button class="nav-item" id="nav-models" onclick="switchTab('models')">
+      </a>
+      <a href="/models" class="nav-item" style="text-decoration:none;">
         <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>
         Models
-      </button>
-      <button class="nav-item" id="nav-datasets" onclick="switchTab('datasets')">
+      </a>
+      <a href="/datasets" class="nav-item" style="text-decoration:none;">
         <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
         Datasets
-      </button>
+      </a>
       <button class="nav-item" id="nav-pipelines" onclick="switchTab('pipelines')">
         <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
         Pipelines
@@ -259,10 +258,6 @@
           </div>
           </div>
         </div>
-        <button id="topbar-action" onclick="openNewRunModal()" class="hidden" style="display:none;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:6px 14px;border-radius:9px;background:rgba(6,192,216,0.1);border:1px solid rgba(6,192,216,0.25);color:#06C0D8;cursor:pointer;transition:all 0.15s;">
-          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-          + New Run
-        </button>
       </div>
     </header>
 
@@ -344,11 +339,11 @@
           <!-- Mini sparklines for other runs -->
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px;padding-top:16px;border-top:1px solid var(--c-border);">
             <div>
-              <p style="font-size:11px;color:var(--c-muted);margin-bottom:4px;" class="mono">run-002 &middot; rlhf-reward-v2</p>
+              <p style="font-size:11px;color:var(--c-muted);margin-bottom:4px;" class="mono">run-002 &middot; nf-reward-v1</p>
               <canvas id="spark-2" height="32"></canvas>
             </div>
             <div>
-              <p style="font-size:11px;color:var(--c-muted);margin-bottom:4px;" class="mono">run-007 &middot; LLM_FineTune_v4</p>
+              <p style="font-size:11px;color:var(--c-muted);margin-bottom:4px;" class="mono">run-007 &middot; LLM_FineTune_v4_Internal</p>
               <canvas id="spark-7" height="32"></canvas>
             </div>
             <div style="display:flex;flex-direction:column;justify-content:flex-end;gap:4px;">
@@ -375,10 +370,10 @@
           <button class="filter-btn" data-filter="failed" onclick="filterRuns('failed')">Failed</button>
           <button class="filter-btn" data-filter="queued" onclick="filterRuns('queued')">Queued</button>
           <button class="filter-btn" data-filter="completed" onclick="filterRuns('completed')">Completed</button>
-          <button onclick="openNewRunModal()" style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:5px 14px;border-radius:8px;background:rgba(6,192,216,0.1);border:1px solid rgba(6,192,216,0.25);color:#06C0D8;cursor:pointer;transition:all 0.15s;">
+          <a href="/jobs/new" style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:5px 14px;border-radius:8px;background:rgba(6,192,216,0.1);border:1px solid rgba(6,192,216,0.25);color:#06C0D8;cursor:pointer;transition:all 0.15s;text-decoration:none;">
             <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             New Run
-          </button>
+          </a>
         </div>
 
         <div class="card" style="overflow:hidden;">
@@ -401,89 +396,6 @@
           </div>
         </div>
       </div><!-- /overview -->
-
-      <!-- RUNS PANEL -->
-      <div id="panel-runs" style="display:none;padding:24px;">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:16px;">
-          <button class="filter-btn active" data-filter="all" onclick="filterRuns('all')">All</button>
-          <button class="filter-btn" data-filter="running" onclick="filterRuns('running')">Running</button>
-          <button class="filter-btn" data-filter="failed" onclick="filterRuns('failed')">Failed</button>
-          <button class="filter-btn" data-filter="queued" onclick="filterRuns('queued')">Queued</button>
-          <button class="filter-btn" data-filter="completed" onclick="filterRuns('completed')">Completed</button>
-          <a href="/jobs/new" style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:5px 14px;border-radius:8px;background:linear-gradient(135deg,#06C0D8,#8B5CF6);color:#fff;cursor:pointer;transition:all 0.15s;text-decoration:none;">
-            <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            New Run
-          </a>
-        </div>
-        <div class="card" style="overflow:hidden;">
-          <div style="padding:14px 20px;border-bottom:1px solid var(--c-border);">
-            <h3 style="font-size:14px;font-weight:600;color:#fff;">Training Runs</h3>
-            <p style="font-size:11px;color:var(--c-faint);margin-top:2px;">All training jobs in workspace neuro-prod</p>
-          </div>
-          <table style="width:100%;border-collapse:collapse;">
-            <thead>
-              <tr style="border-bottom:1px solid var(--c-border);background:rgba(20,23,33,0.6);">
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Run</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Model</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Status</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Started</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Duration</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Loss</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">GPU</th>
-              </tr>
-            </thead>
-            <tbody id="runs-panel-tbody"></tbody>
-          </table>
-        </div>
-      </div><!-- /runs -->
-
-      <!-- MODELS PANEL -->
-      <div id="panel-models" style="display:none;padding:24px;">
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px;">
-          <div class="card" style="padding:18px;">
-            <p style="font-size:12px;color:var(--c-muted);margin-bottom:6px;">Total Models</p>
-            <p style="font-size:28px;font-weight:700;color:#fff;">12</p>
-          </div>
-          <div class="card" style="padding:18px;">
-            <p style="font-size:12px;color:var(--c-muted);margin-bottom:6px;">Deployed</p>
-            <p style="font-size:28px;font-weight:700;color:#86EFAC;">3</p>
-          </div>
-          <div class="card" style="padding:18px;">
-            <p style="font-size:12px;color:var(--c-muted);margin-bottom:6px;">In Training</p>
-            <p style="font-size:28px;font-weight:700;color:#7DD3FC;">2</p>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;" id="model-cards"></div>
-      </div><!-- /models -->
-
-      <!-- DATASETS PANEL -->
-      <div id="panel-datasets" style="display:none;padding:24px;">
-        <div class="card" style="overflow:hidden;">
-          <div style="padding:14px 20px;border-bottom:1px solid var(--c-border);">
-            <h3 style="font-size:14px;font-weight:600;color:#fff;">Dataset Registry</h3>
-            <p style="font-size:11px;color:var(--c-faint);margin-top:2px;">Training and evaluation datasets — workspace: neuro-prod</p>
-          </div>
-          <table style="width:100%;border-collapse:collapse;">
-            <thead>
-              <tr style="border-bottom:1px solid var(--c-border);background:rgba(20,23,33,0.6);">
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Name</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Type</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Size</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Classification</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Location</th>
-                <th style="padding:10px 20px;font-size:11px;font-weight:600;color:var(--c-faint);text-transform:uppercase;letter-spacing:0.06em;">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr class="data-row"><td style="padding:12px 20px;font-size:12px;color:#E2E8F0;" class="mono">biometric_auth_training_set.parquet</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);" class="mono">parquet</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);">48.3 GB</td><td style="padding:12px 20px;"><span class="cls-restricted">RESTRICTED</span></td><td style="padding:12px 20px;font-size:12px;color:var(--c-faint);" class="mono">S3-Node-01</td><td style="padding:12px 20px;"><button onclick="downloadDataset(this)" style="font-size:12px;color:#06C0D8;cursor:pointer;font-weight:500;">Download</button></td></tr>
-              <tr class="data-row"><td style="padding:12px 20px;font-size:12px;color:#E2E8F0;" class="mono">internal_slack_logs_Q1.jsonl</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);" class="mono">jsonl</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);">12.7 GB</td><td style="padding:12px 20px;"><span class="cls-confidential">CONFIDENTIAL</span></td><td style="padding:12px 20px;font-size:12px;color:var(--c-faint);" class="mono">DB-Main</td><td style="padding:12px 20px;"><button onclick="downloadDataset(this)" style="font-size:12px;color:#06C0D8;cursor:pointer;font-weight:500;">Download</button></td></tr>
-              <tr class="data-row"><td style="padding:12px 20px;font-size:12px;color:#E2E8F0;" class="mono">llm_pretrain_web_2025.tar.gz</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);" class="mono">tar.gz</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);">2.1 TB</td><td style="padding:12px 20px;"><span class="cls-internal">INTERNAL</span></td><td style="padding:12px 20px;font-size:12px;color:var(--c-faint);" class="mono">S3-Node-02</td><td style="padding:12px 20px;"><button onclick="downloadDataset(this)" style="font-size:12px;color:#06C0D8;cursor:pointer;font-weight:500;">Download</button></td></tr>
-              <tr class="data-row"><td style="padding:12px 20px;font-size:12px;color:#E2E8F0;" class="mono">rlhf_preference_data_v3.jsonl</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);" class="mono">jsonl</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);">8.4 GB</td><td style="padding:12px 20px;"><span class="cls-internal">INTERNAL</span></td><td style="padding:12px 20px;font-size:12px;color:var(--c-faint);" class="mono">S3-Node-01</td><td style="padding:12px 20px;"><button onclick="downloadDataset(this)" style="font-size:12px;color:#06C0D8;cursor:pointer;font-weight:500;">Download</button></td></tr>
-              <tr class="data-row"><td style="padding:12px 20px;font-size:12px;color:#E2E8F0;" class="mono">medical_records_deidentified.parquet</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);" class="mono">parquet</td><td style="padding:12px 20px;font-size:12px;color:var(--c-muted);">156 GB</td><td style="padding:12px 20px;"><span class="cls-restricted">RESTRICTED</span></td><td style="padding:12px 20px;font-size:12px;color:var(--c-faint);" class="mono">S3-Secure</td><td style="padding:12px 20px;"><button onclick="downloadDataset(this)" style="font-size:12px;color:#06C0D8;cursor:pointer;font-weight:500;">Download</button></td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div><!-- /datasets -->
 
       <!-- PIPELINES PANEL -->
       <div id="panel-pipelines" style="display:none;padding:24px;">
@@ -633,41 +545,8 @@ function buildRow(r) {
 
 function renderRuns() {
   const html = RUNS.map(buildRow).join('');
-  ['runs-tbody','runs-panel-tbody'].forEach(id => {
-    const el = document.getElementById(id);
-    if(el) el.innerHTML = html;
-  });
-}
-
-const MODELS = [
-  { name:'nf-llm-70b-q4', ver:'v4.1', size:'140.2 GB', status:'deployed', s3:'s3://neuro-models-prod/llm-70b/v4/', date:'2026-04-28' },
-  { name:'nf-embed-v2',   ver:'v2.3', size:'3.4 GB',   status:'deployed', s3:'s3://neuro-models-prod/embed/v2/',   date:'2026-04-15' },
-  { name:'nf-reward-v1',  ver:'v1.7', size:'12.1 GB',  status:'deployed', s3:'s3://neuro-models-prod/reward/v1/',  date:'2026-03-30' },
-  { name:'nf-vision-clip-v3', ver:'v3.0', size:'8.9 GB', status:'archived', s3:'s3://neuro-models-archive/clip/v3/', date:'2026-02-14' },
-  { name:'nf-bert-squad', ver:'v2.1', size:'1.1 GB',   status:'training', s3:'s3://neuro-models-prod/bert/squad/v2/', date:'2026-05-24' },
-];
-
-function renderModels() {
-  const el = document.getElementById('model-cards');
-  if(!el) return;
-  el.innerHTML = MODELS.map(m => {
-    const badgeMap = { deployed:'badge-deployed', archived:'badge-archived', training:'badge-training' };
-    const labelMap = { deployed:'Deployed', archived:'Archived', training:'Training' };
-    const canDeploy = m.status !== 'training';
-    return `<div class="card" style="padding:20px;">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px;">
-        <div><p style="font-size:14px;font-weight:600;color:#fff;">${m.name}</p><p style="font-size:11px;color:var(--c-faint);margin-top:2px;" class="mono">${m.ver} &middot; ${m.size}</p></div>
-        <span class="badge ${badgeMap[m.status]}">${labelMap[m.status]}</span>
-      </div>
-      <p style="font-size:11px;color:var(--c-faint);margin-bottom:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" class="mono">${m.s3}</p>
-      <div style="display:flex;align-items:center;justify-content:space-between;">
-        <p style="font-size:11px;color:var(--c-muted);">Created ${m.date}</p>
-        ${canDeploy
-          ? `<button onclick="openDeployModal('${m.name}')" style="font-size:12px;font-weight:500;padding:5px 12px;border-radius:8px;background:rgba(6,192,216,0.1);border:1px solid rgba(6,192,216,0.25);color:#06C0D8;cursor:pointer;transition:all 0.15s;">Deploy</button>`
-          : `<button disabled style="font-size:12px;font-weight:500;padding:5px 12px;border-radius:8px;background:var(--c-elevated);border:1px solid var(--c-border);color:var(--c-faint);cursor:not-allowed;">Deploy</button>`}
-      </div>
-    </div>`;
-  }).join('');
+  const el = document.getElementById('runs-tbody');
+  if(el) el.innerHTML = html;
 }
 
 const PIPELINES = [
@@ -705,9 +584,9 @@ function renderPipelines() {
 }
 
 // ── Tab logic ──────────────────────────────────────────────────────────────────
-const PANELS = ['overview','runs','models','datasets','pipelines'];
-const TITLES = { overview:'Dashboard Overview', runs:'Training Runs', models:'Model Registry', datasets:'Dataset Registry', pipelines:'ML Pipelines' };
-const SUBTITLES = { overview:'build 20260428 · workspace: neuro-prod', runs:'All training jobs', models:'Registered checkpoints', datasets:'Training & eval datasets', pipelines:'Automated workflows' };
+const PANELS = ['overview','pipelines'];
+const TITLES = { overview:'Dashboard Overview', pipelines:'ML Pipelines' };
+const SUBTITLES = { overview:'build 20260428 · workspace: neuro-prod', pipelines:'Automated workflows' };
 
 function switchTab(name) {
   PANELS.forEach(t => {
@@ -718,9 +597,6 @@ function switchTab(name) {
   });
   document.getElementById('topbar-title').textContent = TITLES[name]||name;
   document.getElementById('topbar-subtitle').textContent = SUBTITLES[name]||'workspace: neuro-prod';
-  const btn = document.getElementById('topbar-action');
-  if(['overview','runs'].includes(name)) { btn.style.display='flex'; btn.classList.remove('hidden'); }
-  else { btn.style.display='none'; btn.classList.add('hidden'); }
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter==='all'));
   document.querySelectorAll('tr[data-status]').forEach(r => r.style.display='');
 }
@@ -958,11 +834,10 @@ function showToast(msg) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 renderRuns();
-renderModels();
 renderPipelines();
 const urlParams = new URLSearchParams(window.location.search);
 const initialTab = urlParams.get('tab') || window.location.hash.slice(1);
-if (PANELS.includes(initialTab)) {
+if (initialTab && PANELS.includes(initialTab)) {
   switchTab(initialTab);
 } else {
   switchTab('overview');
