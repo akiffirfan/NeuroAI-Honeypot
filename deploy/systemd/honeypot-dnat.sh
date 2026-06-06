@@ -75,6 +75,15 @@ rule "dport 6379 dnat to 10.10.20.6:6379"  tcp dport 6379  dnat to 10.10.20.6:63
 # Module 4: MariaDB lure (port 3306 → container 10.10.20.4:3306)
 rule "dport 3306 dnat to 10.10.20.4:3306"  tcp dport 3306  dnat to 10.10.20.4:3306
 
+# MariaDB FORWARD rule — MariaDB has no published ports: so Docker never creates a
+# DOCKER chain ACCEPT for it. Must be in DOCKER-USER (survives co-tenant restarts).
+if ! iptables -C DOCKER-USER -d 10.10.20.4/32 -p tcp --dport 3306 -j ACCEPT 2>/dev/null; then
+    iptables -I DOCKER-USER 1 -d 10.10.20.4/32 -p tcp --dport 3306 -j ACCEPT
+    echo "honeypot-dnat: added DOCKER-USER ACCEPT for mariadb-lure 10.10.20.4:3306"
+else
+    echo "honeypot-dnat: DOCKER-USER rule for mariadb-lure already present"
+fi
+
 # Port 445 (SMB): REVERTED — OpenCanary SMB module requires a running Samba/smbd
 # with full_audit VFS; no samba in the Dockerfile; dark 445 is a fingerprint tell.
 # Do not re-enable without: samba in Dockerfile, smb.conf full_audit, bind 445 in

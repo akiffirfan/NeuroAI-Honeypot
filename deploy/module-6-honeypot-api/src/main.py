@@ -649,8 +649,8 @@ async def request_logger(request: Request, call_next):
             # Attacker hit a lure path (/.env, /api/v1/internal/config, etc.)
             asyncio.create_task(_push_honeydash_async(event, "Lure Access"))
         elif is_login and username:
-            # Credential submission — push with login label
-            asyncio.create_task(_push_honeydash_async(event, "SSH Login"))
+            # Credential submission on web login page — push with HTTP-specific label
+            asyncio.create_task(_push_honeydash_async(event, "Web Login Attempt"))
 
     # Strip internal signalling headers — must never reach the client
     if "X-Lure-Credential-Used" in response.headers:
@@ -1011,6 +1011,7 @@ async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None
         honeydash_event = {
             "eventid": event["event_type"],
             "sensor": "remote",
+            "protocol": "http",
             "timestamp": event["created_at"].isoformat() + "Z",
             "src_ip": event["src_ip"],
             "src_port": event.get("src_port"),
@@ -1040,6 +1041,8 @@ async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None
                 or payload_dict.get("query_params", {}).get("path")
                 or payload_dict.get("path")
             )
+        elif attack_type in ("Lure Access", "Web Login Attempt"):
+            honeydash_event["input"] = payload_dict.get("path")
 
         # FIX-G: Populate HoneyDash download_url for lure file downloads.
         # HoneyDash reads data.get("url") or data.get("download_url") → Event.download_url.
@@ -1969,6 +1972,7 @@ async def artifacts_page(request: Request, path: str = ""):
 @app.get("/jobs/new")
 async def jobs_new_page(request: Request):
     if not _session_ok(request):
+        _log_unauth_access(request)
         return RedirectResponse(url="/", status_code=302)
     return templates.TemplateResponse("jobs_new.html", {"request": request})
 
@@ -2119,6 +2123,7 @@ async def settings_workspace(request: Request):
 @app.get("/settings/api-keys")
 async def api_keys_page(request: Request):
     if not _session_ok(request):
+        _log_unauth_access(request)
         return RedirectResponse(url="/", status_code=302)
     await _jitter()
     return templates.TemplateResponse("api_keys.html", {"request": request})
@@ -2247,6 +2252,38 @@ def _session_ok(request: Request) -> bool:
     return bool(request.cookies.get("nro_session"))
 
 
+# Sensitive paths where unauthenticated direct access is a strong recon signal
+_SENSITIVE_UNAUTH_PATHS = {"/admin", "/settings/api-keys", "/jobs/new"}
+
+def _log_unauth_access(request: Request) -> None:
+    """Fire a no-cooldown event when an attacker hits a sensitive page with no valid session."""
+    src_ip = request.headers.get("X-Real-IP") or (request.client.host if request.client else "unknown")
+    event: dict[str, Any] = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.unauth.sensitive_access",
+        "src_ip": src_ip,
+        "src_port": None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({
+            "path": request.url.path,
+            "ua": request.headers.get("user-agent", "")[:200],
+        }),
+        "raw_log": None,
+        "session_id": None,
+        "geo_country": None,
+        "geo_country_code": None,
+        "geo_city": None,
+        "geo_asn": None,
+        "geo_org": None,
+    }
+    asyncio.create_task(_log_event_async(event))
+    asyncio.create_task(_push_honeydash_async(event, "Unauth Sensitive Access"))
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     if not _session_ok(request):
@@ -2262,6 +2299,7 @@ async def dashboard(request: Request):
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
     if not _session_ok(request):
+        _log_unauth_access(request)
         return RedirectResponse(url="/", status_code=302)
     session_id = request.cookies.get("nro_session", "")
     with _SESSION_USER_LOCK:
@@ -2626,12 +2664,17 @@ async def script_upload(request: Request, file: UploadFile = File(...)):
             status_code=413,
         )
 
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    save_path = UPLOAD_DIR / save_name
-    await asyncio.to_thread(save_path.write_bytes, content)
+    try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        save_path = UPLOAD_DIR / save_name
+        await asyncio.to_thread(save_path.write_bytes, content)
+        saved = True
+    except Exception as exc:
+        logger.warning("upload_save_failed", error=str(exc), path=str(UPLOAD_DIR))
+        saved = False
 
     mime = file.content_type or "application/octet-stream"
-    _log_event({
+    upload_event = {
         "event_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc),
         "sensor": "api",
@@ -2643,10 +2686,10 @@ async def script_upload(request: Request, file: UploadFile = File(...)):
         "password": None,
         "payload": json.dumps({
             "filename": raw_name,
-            "saved_as": save_name,
+            "saved_as": save_name if saved else None,
             "size_bytes": len(content),
             "mime_type": mime,
-            "upload_dir": str(UPLOAD_DIR),
+            "saved": saved,
         }),
         "raw_log": None,
         "session_id": request.cookies.get("nro_session"),
@@ -2655,8 +2698,10 @@ async def script_upload(request: Request, file: UploadFile = File(...)):
         "geo_city": None,
         "geo_asn": None,
         "geo_org": None,
-    })
-    logger.info("upload_captured", filename=save_name, size=len(content), mime=mime, ip=src_ip)
+    }
+    asyncio.create_task(_log_event_async(upload_event))
+    asyncio.create_task(_push_honeydash_async(upload_event, "Malware Upload"))
+    logger.info("upload_captured", filename=save_name, size=len(content), mime=mime, ip=src_ip, saved=saved)
 
     return JSONResponse({
         "ok": True,

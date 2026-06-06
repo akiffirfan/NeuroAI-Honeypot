@@ -1660,6 +1660,7 @@ _HD_PORT_PROTOCOL = {
     25:   "smtp",
     80:   "http",
     443:  "https",
+    445:  "smb",
     2222: "ssh",
     3306: "mysql",
     6379: "redis",
@@ -1679,12 +1680,17 @@ _HD_SENSOR_NAME = {
 # already maps those with priority-1 and wins over this dict.
 # Only event types NOT in HoneyDash's native map are listed here.
 _HD_ATTACK_TYPE: dict = {
-    # OpenCanary / MariaDB (not in HoneyDash native map)
-    "opencanary.ftp.login":      "FTP Brute Force",
-    "opencanary.telnet.login":   "Telnet Attack",
-    "opencanary.redis.command":  "Redis Probe",
-    "mariadb.connect":           "MySQL Brute Force",
-    "mariadb.query":             "MySQL Query",
+    # OpenCanary / MariaDB — remote.* prefixed eventids bypass HoneyDash's cowrie.* lookup table
+    # so attack_type labels are not overridden by "SSH Brute Force" / "SSH Connect".
+    "remote.ftp.login":         "FTP Brute Force",
+    "remote.ftp.connect":       "FTP Connect",
+    "remote.telnet.login":      "Telnet Brute Force",
+    "remote.telnet.connect":    "Telnet Connect",
+    "remote.redis.auth":        "Redis Auth Attempt",
+    "remote.redis.connect":     "Redis Connect",
+    "remote.redis.command":     "Redis Command",
+    "remote.mariadb.connect":   "MySQL Connect",
+    "remote.mariadb.query":     "MySQL Query",
     # HTTP SNARE
     "http.sqli.attempt":            "SQL Injection",
     "http.post.sqli.attempt":       "SQL Injection",
@@ -1731,6 +1737,32 @@ _HD_NOISE_EVENTS = {
     "api.startup",
 }
 
+# Remap Cowrie-compatible eventids to sensor-specific remote.* strings for non-SSH sensors.
+# HoneyDash's EVENTID_TO_ATTACK_TYPE maps cowrie.login.failed → "SSH Brute Force" with
+# first-priority — this overrides any attack_type Neuro sends.  Switching to remote.* eventids
+# makes the HoneyDash lookup return None, falling through to data.get("attack_type") which
+# carries the correct label from _HD_ATTACK_TYPE.
+#
+# Keys: (dst_port: int, cowrie_eventid: str)  →  replacement eventid: str
+# NOTE: cowrie.session.closed is intentionally absent — it is in _HD_NOISE_EVENTS and is
+# filtered out BEFORE this remap runs, so an entry here would never be reached.
+_HD_EVENTID_REMAP: dict[tuple[int, str], str] = {
+    # OpenCanary FTP (port 21)
+    (21, "cowrie.login.failed"):    "remote.ftp.login",
+    (21, "cowrie.session.connect"): "remote.ftp.connect",
+    # OpenCanary Telnet (port 23)
+    (23, "cowrie.login.failed"):    "remote.telnet.login",
+    (23, "cowrie.session.connect"): "remote.telnet.connect",
+    # OpenCanary Redis (port 6379)
+    (6379, "cowrie.login.failed"):    "remote.redis.auth",
+    (6379, "cowrie.session.connect"): "remote.redis.connect",
+    (6379, "cowrie.command.input"):   "remote.redis.command",
+    # MariaDB (port 3306)
+    (3306, "cowrie.session.connect"): "remote.mariadb.connect",
+    (3306, "cowrie.command.input"):   "remote.mariadb.query",
+}
+
+
 def _honeydash_event(event: dict) -> dict | None:
     """Build a HoneyDash-compatible event object from an internal event.
 
@@ -1747,6 +1779,21 @@ def _honeydash_event(event: dict) -> dict | None:
 
     if out.get("eventid") in _HD_NOISE_EVENTS:
         return None
+
+    # Remap Cowrie-compatible eventids to sensor-specific remote.* strings for non-SSH sensors.
+    # Mutates out["eventid"] only — the original event dict (already written to PostgreSQL)
+    # is never touched.  SSH events (port 22/2222) have no entries in _HD_EVENTID_REMAP
+    # and are completely unaffected.
+    _raw_eid = out.get("eventid", "")
+    _raw_port = out.get("dst_port")
+    if _raw_port:
+        try:
+            _raw_port_int = int(_raw_port)
+            _remapped_eid = _HD_EVENTID_REMAP.get((_raw_port_int, _raw_eid))
+            if _remapped_eid:
+                out["eventid"] = _remapped_eid
+        except (ValueError, TypeError):
+            pass
 
     # Inject correct protocol based on dst_port
     dst_port = out.get("dst_port")

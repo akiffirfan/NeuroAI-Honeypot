@@ -28,6 +28,8 @@ TELEGRAM_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
 POSTGRES_DSN        = os.environ["POSTGRES_DSN"]
 POLL_INTERVAL       = int(os.environ.get("POLL_INTERVAL", "10"))
 ALERT_COOLDOWN_SECS = int(os.environ.get("ALERT_COOLDOWN_SECS", "60"))
+# Routine nav pages (dashboard, runs, models, etc.) — one alert per IP per 30 min
+_ROUTINE_COOLDOWN_SECS = 1800
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,12 +46,12 @@ log = logging.getLogger("sentinel")
 _cooldowns: dict = {}   # {(src_ip, category): last_alert_monotonic}
 
 
-def _suppressed(src_ip: str, category: str) -> bool:
+def _suppressed(src_ip: str, category: str, cooldown: int = ALERT_COOLDOWN_SECS) -> bool:
     """Return True if this (IP, category) pair was alerted within the cooldown window."""
     key  = (src_ip, category)
     now  = time.monotonic()
     last = _cooldowns.get(key, 0.0)
-    if now - last < ALERT_COOLDOWN_SECS:
+    if now - last < cooldown:
         return True
     _cooldowns[key] = now
     return False
@@ -82,6 +84,7 @@ _NO_COOLDOWN_EVENTS = {
     "cross_sensor.credential_relay",    # SSH config.yaml read → MariaDB connect — always alert
     "smb.ntlmv2.hash",                  # NTLMv2 hash capture — highest-value SMB event, always alert
     "http.telemetry.devtools_opened",   # human attacker: F12/side-panel — always alert
+    "http.unauth.sensitive_access",    # direct hit on /admin /api-keys /jobs-new without session — always alert
 }
 
 
@@ -111,6 +114,8 @@ def _build_reason(event_type: str, row: dict, payload: dict) -> str:
         return f"LURE FILE DOWNLOADED: {dl_file}"
     if event_type == "http.canarytoken.fired":
         return f"CANARYTOKEN FIRED — real attacker IP: {real_ip or '(not captured)'}"
+    if event_type == "http.unauth.sensitive_access":
+        return f"Unauthenticated access — {path or url} — no session (recon or credential skip attempt)"
     if event_type == "http.snare.ssrf_attempt":
         return f"SSRF Attempt — target URL: {ssrf_url[:100] or path}"
     if event_type == "http.prompt.injection":
@@ -310,6 +315,12 @@ def _should_alert(row: dict) -> tuple:
     }
     if event_type in _SNARE_CATEGORIES:
         cooldown_category = _SNARE_CATEGORIES[event_type]
+    elif event_type in {
+        "http.get.dashboard", "http.get.runs", "http.get.models",
+        "http.get.datasets", "http.get.notifications", "http.get.pipelines",
+        "http.get.static",
+    }:
+        cooldown_category = "http.routine"
     elif event_type.startswith("http."):
         cooldown_category = "http"
     elif event_type == "cowrie.login.failed":
@@ -385,6 +396,8 @@ def _build_message(row: dict, reason: str) -> str:
         header = "🪟📁 <b>SMB SHARE PROBE</b>"
     elif event_type.startswith("smb."):
         header = "🪟📁 <b>SMB SHARE PROBE</b>"
+    elif event_type == "http.unauth.sensitive_access":
+        header = "🚪🔍 <b>UNAUTH SENSITIVE ACCESS — NO SESSION</b>"
     elif event_type == "http.telemetry.devtools_opened":
         header = "🔍 <b>DEVTOOLS OPENED — HUMAN ATTACKER</b>"
     elif event_type.startswith("security."):
@@ -674,7 +687,8 @@ def main() -> None:
                     src_ip = row.get("src_ip") or ""
                     event_type = row.get("event_type", "")
                     # No-cooldown events always fire regardless of suppression window
-                    if event_type in _NO_COOLDOWN_EVENTS or not _suppressed(src_ip, category):
+                    cooldown = _ROUTINE_COOLDOWN_SECS if category == "http.routine" else ALERT_COOLDOWN_SECS
+                    if event_type in _NO_COOLDOWN_EVENTS or not _suppressed(src_ip, category, cooldown):
                         send_alert(row, reason, category)
 
             # Trim dedup set — keep last 5000 IDs to bound memory
