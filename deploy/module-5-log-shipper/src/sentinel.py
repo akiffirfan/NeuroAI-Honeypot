@@ -6,7 +6,9 @@ Polls PostgreSQL every POLL_INTERVAL seconds for new high-value events and
 sends Telegram notifications.  Runs as its own container — completely
 independent of log_shipper.py.
 
-Requires:  POSTGRES_DSN  TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID
+Requires:  POSTGRES_DSN  +  Telegram credentials via Docker secret files
+           /run/secrets/telegram_bot_token  and  /run/secrets/telegram_chat_id
+           (env vars TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID accepted as fallback)
 Optional:  POLL_INTERVAL (default 10)  ALERT_COOLDOWN_SECS (default 60)
 """
 
@@ -16,6 +18,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import psycopg2
 import requests
@@ -23,8 +26,19 @@ import requests
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-TELEGRAM_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
+def _read_secret(secret_name: str, env_var: str, default: str = "") -> str:
+    """Read from Docker secret file; fall back to env var.
+
+    Docker Compose mounts secrets at /run/secrets/<name>. Reading from a file
+    keeps the value out of `docker inspect` env output and /proc/PID/environ.
+    """
+    path = Path(f"/run/secrets/{secret_name}")
+    if path.exists():
+        return path.read_text().strip()
+    return os.environ.get(env_var, default)
+
+TELEGRAM_BOT_TOKEN  = _read_secret("telegram_bot_token", "TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID    = _read_secret("telegram_chat_id",   "TELEGRAM_CHAT_ID")
 POSTGRES_DSN        = os.environ["POSTGRES_DSN"]
 POLL_INTERVAL       = int(os.environ.get("POLL_INTERVAL", "10"))
 ALERT_COOLDOWN_SECS = int(os.environ.get("ALERT_COOLDOWN_SECS", "60"))

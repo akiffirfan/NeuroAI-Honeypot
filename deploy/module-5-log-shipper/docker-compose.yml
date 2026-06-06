@@ -57,6 +57,21 @@
 #   The log-shipper is not internet-exposed, so the risk of mutable tags is lower
 #   than for Cowrie/MariaDB, but pinning is still recommended for reproducibility.
 
+# ---------------------------------------------------------------------------
+# Docker secrets — Telegram credentials stored as host files, not env vars.
+# Operator: create these files before first up (see DEPLOYMENT.md for steps).
+#   sudo mkdir -p /opt/honeypot/secrets && sudo chmod 700 /opt/honeypot/secrets
+#   printf '%s' 'YOUR_BOT_TOKEN' | sudo tee /opt/honeypot/secrets/telegram_bot_token > /dev/null
+#   printf '%s' 'YOUR_CHAT_ID'   | sudo tee /opt/honeypot/secrets/telegram_chat_id   > /dev/null
+#   sudo chmod 600 /opt/honeypot/secrets/telegram_bot_token /opt/honeypot/secrets/telegram_chat_id
+# Mounted read-only at /run/secrets/ inside the sentinel container.
+# ---------------------------------------------------------------------------
+secrets:
+  telegram_bot_token:
+    file: ../../secrets/telegram_bot_token
+  telegram_chat_id:
+    file: ../../secrets/telegram_chat_id
+
 networks:
   honeypot-net:
     external: true       # created by Module 2; do NOT redefine — joining only
@@ -216,12 +231,15 @@ services:
       - data-net                 # provides access to postgres:5432
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    secrets:
+      - telegram_bot_token   # mounted at /run/secrets/telegram_bot_token
+      - telegram_chat_id     # mounted at /run/secrets/telegram_chat_id
     env_file:
       - .env
     environment:
       - POSTGRES_DSN=postgresql://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeypot
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID intentionally omitted from env —
+      # sentinel reads from /run/secrets/ files. Env vars accepted as fallback only.
       - ALERT_COOLDOWN_SECS=${ALERT_COOLDOWN_SECS:-60}
       - POLL_INTERVAL=${POLL_INTERVAL:-10}
       - PYTHONUNBUFFERED=1
