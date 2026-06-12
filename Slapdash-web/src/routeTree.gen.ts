@@ -23,6 +23,7 @@ import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as DocsRouteImport } from './routes/docs'
 import { Route as DatasetsRouteImport } from './routes/datasets'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as ContactRouteImport } from './routes/contact'
 import { Route as ChangelogRouteImport } from './routes/changelog'
 import { Route as ArtifactsRouteImport } from './routes/artifacts'
 import { Route as ApiKeysRouteImport } from './routes/api-keys'
@@ -103,6 +104,11 @@ const DashboardRoute = DashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ContactRoute = ContactRouteImport.update({
+  id: '/contact',
+  path: '/contact',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ChangelogRoute = ChangelogRouteImport.update({
   id: '/changelog',
   path: '/changelog',
@@ -154,6 +160,7 @@ export interface FileRoutesByFullPath {
   '/api-keys': typeof ApiKeysRoute
   '/artifacts': typeof ArtifactsRoute
   '/changelog': typeof ChangelogRoute
+  '/contact': typeof ContactRoute
   '/dashboard': typeof DashboardRoute
   '/datasets': typeof DatasetsRoute
   '/docs': typeof DocsRoute
@@ -179,6 +186,7 @@ export interface FileRoutesByTo {
   '/api-keys': typeof ApiKeysRoute
   '/artifacts': typeof ArtifactsRoute
   '/changelog': typeof ChangelogRoute
+  '/contact': typeof ContactRoute
   '/dashboard': typeof DashboardRoute
   '/datasets': typeof DatasetsRoute
   '/docs': typeof DocsRoute
@@ -205,6 +213,7 @@ export interface FileRoutesById {
   '/api-keys': typeof ApiKeysRoute
   '/artifacts': typeof ArtifactsRoute
   '/changelog': typeof ChangelogRoute
+  '/contact': typeof ContactRoute
   '/dashboard': typeof DashboardRoute
   '/datasets': typeof DatasetsRoute
   '/docs': typeof DocsRoute
@@ -232,6 +241,7 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/artifacts'
     | '/changelog'
+    | '/contact'
     | '/dashboard'
     | '/datasets'
     | '/docs'
@@ -257,6 +267,7 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/artifacts'
     | '/changelog'
+    | '/contact'
     | '/dashboard'
     | '/datasets'
     | '/docs'
@@ -282,6 +293,7 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/artifacts'
     | '/changelog'
+    | '/contact'
     | '/dashboard'
     | '/datasets'
     | '/docs'
@@ -308,6 +320,7 @@ export interface RootRouteChildren {
   ApiKeysRoute: typeof ApiKeysRoute
   ArtifactsRoute: typeof ArtifactsRoute
   ChangelogRoute: typeof ChangelogRoute
+  ContactRoute: typeof ContactRoute
   DashboardRoute: typeof DashboardRoute
   DatasetsRoute: typeof DatasetsRoute
   DocsRoute: typeof DocsRoute
@@ -436,6 +449,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChangelogRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/contact': {
+      id: '/contact'
+      path: '/contact'
+      fullPath: '/contact'
+      preLoaderRoute: typeof ContactRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/artifacts': {
       id: '/artifacts'
       path: '/artifacts'
@@ -500,6 +520,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKeysRoute: ApiKeysRoute,
   ArtifactsRoute: ArtifactsRoute,
   ChangelogRoute: ChangelogRoute,
+  ContactRoute: ContactRoute,
   DashboardRoute: DashboardRoute,
   DatasetsRoute: DatasetsRoute,
   DocsRoute: DocsRoute,

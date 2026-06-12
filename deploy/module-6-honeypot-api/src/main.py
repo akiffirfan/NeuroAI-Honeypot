@@ -5996,6 +5996,66 @@ async def v2_mfa_verify(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Public contact / sales form — honeypot trap for XSS/SQLi form injection
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v2/contact")
+async def contact_form(request: Request):
+    """
+    Public sales contact form — no auth required.
+    Detects XSS/SQLi injected into any field and logs as malicious_form_submission.
+    Always returns the same success response so attackers can't detect the trap.
+    """
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    first_name   = str(body.get("first_name", ""))
+    last_name    = str(body.get("last_name", ""))
+    work_email   = str(body.get("work_email", ""))
+    company_size = str(body.get("company_size", ""))
+    message      = str(body.get("message", ""))
+
+    combined = " ".join([first_name, last_name, work_email, message]).lower()
+    combined_decoded = urllib.parse.unquote_plus(urllib.parse.unquote_plus(combined))
+
+    # Detect XSS
+    xss_hit = next((p for p in _XSS_PATTERNS if p in combined_decoded), None)
+    # Detect SQLi
+    sqli_hit = next((p for p in _SQLI_PATTERNS if p in combined_decoded), None)
+
+    is_malicious = bool(xss_hit or sqli_hit)
+    attack_vector = f"XSS ({xss_hit})" if xss_hit else (f"SQLi ({sqli_hit})" if sqli_hit else None)
+
+    event_type = "http.contact.malicious_form" if is_malicious else "http.contact.form_submission"
+    payload_dict = {
+        "first_name":    first_name[:120],
+        "last_name":     last_name[:120],
+        "work_email":    work_email[:254],
+        "company_size":  company_size,
+        "message":       message[:2000],
+        "is_malicious":  is_malicious,
+        "attack_vector": attack_vector,
+    }
+
+    ev = {
+        "event_type":  event_type,
+        "sensor":      "api",
+        "src_ip":      src_ip,
+        "created_at":  datetime.now(timezone.utc),
+        "payload":     json.dumps(payload_dict),
+        "username":    work_email or None,
+    }
+    asyncio.create_task(_log_event_async(ev))
+    if is_malicious:
+        asyncio.create_task(_push_honeydash_async(ev, "Malicious Form Submission"))
+
+    return JSONResponse({"status": "received"})
+
+
+# ---------------------------------------------------------------------------
 # Legacy debug trap (v1 path — outside /api/v2/ block, intentionally unauthenticated)
 # ---------------------------------------------------------------------------
 

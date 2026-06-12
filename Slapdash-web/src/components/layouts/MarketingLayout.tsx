@@ -55,9 +55,9 @@ function TopNav() {
           <Link to="/login" className="nro-btn-secondary text-sm">
             Log in
           </Link>
-          <a href="#contact" className="nro-btn-primary text-sm">
-            Get a demo
-          </a>
+          <Link to="/contact" className="nro-btn-primary text-sm">
+            Contact Sales
+          </Link>
         </div>
       </div>
       <div

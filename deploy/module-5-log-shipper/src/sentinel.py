@@ -158,6 +158,7 @@ _NO_COOLDOWN_EVENTS = {
     "http.snare.mfa_enable_attempt",   # password submitted to enable MFA — always alert (captures credential)
     "http.security.allowlist_toggle",  # attacker attempting perimeter lockdown — always alert
     "http.scanner.fingerprinted",      # new tool identification — each is distinct intel, no cooldown
+    "http.contact.malicious_form",     # XSS/SQLi in sales contact form — always alert
 }
 
 
@@ -386,6 +387,7 @@ def _should_alert(row: dict) -> tuple:
         "http.get.xss.attempt":       "web.xss",
         "http.bruteforce.detected":   "web.bruteforce",
         "http.prompt.injection":      "web.prompt_injection",
+        "http.contact.malicious_form": "web.form_injection",  # own bucket — no-cooldown anyway
         # SMB sensor categories (Module 8) — each gets its own cooldown bucket
         "smb.ntlmv2.hash":    "smb.hash",    # no-cooldown anyway (in _NO_COOLDOWN_EVENTS)
         "smb.auth.attempt":   "smb",          # collapses with smb.connect per IP
@@ -512,6 +514,9 @@ def _build_message(row: dict, reason: str) -> str:
         tool       = (payload_data.get("inferred_tool") or "Unknown Tool").replace("_", " ").upper()
         confidence = payload_data.get("confidence") or "?"
         header = f"🚨🤖 <b>SCANNER IDENTIFIED — {_esc(tool)} ({_esc(confidence)})</b>"
+    elif event_type == "http.contact.malicious_form":
+        vector = payload_data.get("attack_vector") or "Unknown"
+        header = f"🚨📋 <b>MALICIOUS FORM SUBMISSION — {_esc(vector)}</b>"
     else:
         header = "🚨 <b>Honeypot Alert</b>"
 

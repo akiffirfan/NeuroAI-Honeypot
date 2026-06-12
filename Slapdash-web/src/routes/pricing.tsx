@@ -62,7 +62,8 @@ function PricingPage() {
               "Community support",
               "1 workspace",
             ]}
-            cta="Start for free"
+            cta="Join Waitlist"
+            ctaHref="/contact"
           />
           <PlanCard
             highlighted
@@ -85,7 +86,8 @@ function PricingPage() {
               "API access (500k requests/month)",
               "SSO (Google Workspace)",
             ]}
-            cta="Start Pro trial"
+            cta="Request Demo"
+            ctaHref="/contact"
           />
           <PlanCard
             badge={<span className="nro-badge nro-badge--slate">Enterprise</span>}
@@ -104,7 +106,7 @@ function PricingPage() {
               "SOC 2 Type II audit report on request",
             ]}
             cta="Talk to sales"
-            ctaHref="mailto:enterprise@cyveera.ai"
+            ctaHref="/contact"
             ctaSecondary
           />
         </div>
