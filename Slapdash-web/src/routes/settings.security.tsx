@@ -185,10 +185,11 @@ function SessionsCard({ isAdmin = false }: { isAdmin?: boolean }) {
 
   const handleConfirm = async () => {
     if (!target) return;
+    // Always call backend — fires HoneyDash/Telegram alert on confirmed revoke
+    try {
+      await sessionMutation.mutateAsync({ session_id: target.sessionId, _csrf: user?.csrf_token });
+    } catch { /* ignore */ }
     if (target.isSelf) {
-      try {
-        await sessionMutation.mutateAsync({ session_id: "current", _csrf: user?.csrf_token });
-      } catch { /* session cleared regardless */ }
       window.location.href = "/login";
     } else {
       setTarget(null);

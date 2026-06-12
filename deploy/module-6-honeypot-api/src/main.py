@@ -267,24 +267,22 @@ _LURE_PATHS = {
     "/status",                             # public status page — scanner exposure
 }
 
-# Portal navigation paths whose GET responses are pure page loads — not attacks.
-# These are excluded from PostgreSQL logging when: method=GET, no attack detected,
-# clean 2xx/3xx response. POST actions on these pages are always logged.
-_PORTAL_NAV_PATHS = frozenset({
-    "/dashboard",
-    "/admin",
-    "/artifacts",
-    "/runs",
-    "/models",
-    "/datasets",
-    "/jobs/new",
-    "/notifications",
-    "/settings/profile",
-    "/settings/integrations",
-    "/settings/workspace",
-    "/settings/security",
-    "/settings/api-keys",
-    "/pipelines",
+# SPA page-load data-fetch endpoints — GET only, no attack signal, no credentials.
+# These fire automatically when the React app mounts a page (useQuery on load).
+# Skipped from PostgreSQL to keep the dataset clean. User-action GETs
+# (/api/v2/artifacts/download, /api/v2/runs/{id}/checkpoint, /api/v2/internal/config,
+# /api/v2/cluster/nodes) are NOT in this set and remain logged.
+_SKIP_LOG_NAV_API = frozenset({
+    "/api/v2/auth/me",           # called on every page load by AuthProvider
+    "/api/v2/runs",
+    "/api/v2/models",
+    "/api/v2/datasets",
+    "/api/v2/notifications",
+    "/api/v2/team",
+    "/api/v2/api-keys",
+    "/api/v2/artifacts",
+    "/api/v2/security/allowlist",
+    "/api/v2/profile/ssh-keys",
 })
 
 # Known scanner User-Agent fragments for bot scoring
@@ -741,27 +739,13 @@ async def request_logger(request: Request, call_next):
         **geo,
     }
 
-    # Decide whether to write to PostgreSQL.
-    # Skip: static assets, health checks, and routine authenticated portal page GETs
-    # that carry zero attack signal. Everything else (POST, attacks, scanners, 4xx/5xx,
-    # login attempts, API calls) is always recorded.
-    _should_log = True
-    if (
+    # Skip static assets and SPA page-load data fetches — no attack signal.
+    _skip = (
         path.startswith("/static/")
         or path == "/favicon.ico"
-        or path in ("/api/v1/health", "/api/v2/health")
-    ):
-        _should_log = False
-    elif (
-        request.method == "GET"
-        and path in _PORTAL_NAV_PATHS
-        and snare_attack_type is None
-        and not _is_scanner_event
-        and response.status_code in (200, 302, 304)
-    ):
-        _should_log = False
-
-    if _should_log:
+        or (request.method == "GET" and path in _SKIP_LOG_NAV_API)
+    )
+    if not _skip:
         asyncio.create_task(_log_event_async(event))
 
     # HoneyDash push — only for SNARE attack events and high-value lure hits.
@@ -3977,11 +3961,11 @@ def _seed_v2_tables() -> None:
             ("Production read-only", "nro_sk_4a7f", "nro_sk_4a7f...b291",
              "nro_sk_4a7f9c3d8e2b1a6f5d4c7b8e9a0f3d2c",
              "read:runs,read:models", "2026-03-14", "2026-06-08"),
-            ("CI/CD pipeline",       "nro_sk_8c2e", "nro_sk_8c2e...f047",
-             "nro_sk_8c2e1b9d3a4f7c5d8e2b1a6f3d9c4e7f",
+            ("CI/CD pipeline",       "nro_sk_8c2e", "nro_sk_8c2e...a3d9",
+             "nro_sk_8c2e1b9d3a4f7c5d8e2b1a6f3d9ca3d9",
              "read:all,write:metrics", "2026-04-01", "2026-06-09"),
-            ("Legacy integration",   "nro_sk_1d9b", "nro_sk_1d9b...0e33",
-             "nro_sk_1d9b3f5a7c2e4b6d8a1c3f5e7b9d0a2c",
+            ("Legacy integration",   "nro_sk_1d9b", "nro_sk_1d9b...7f2e",
+             "nro_sk_1d9b3f5a7c2e4b6d8a1c3f5e7b9d7f2e",
              "admin", "2025-11-12", "2026-05-30"),
         ]
         for row in _APIKEY_SEED:
@@ -4056,10 +4040,12 @@ def _seed_workspace(cur, workspace_id: str) -> None:
         ("CI/CD pipeline",        "read:all,write:metrics", "2026-04-01", "2026-06-09"),
         ("Legacy integration",    "admin",                  "2025-11-12", "2026-05-30"),
     ]
-    for (name, scope, created, last_used) in _KEY_SEED_NAMES:
-        h = hashlib.sha256(f"{workspace_id}:{name}".encode()).hexdigest()
+    for i, (name, scope, created, last_used) in enumerate(_KEY_SEED_NAMES):
+        h = hashlib.sha256(f"{workspace_id}:{name}:{i}".encode()).hexdigest()
         prefix   = f"nro_sk_{h[:4]}"
-        suffix   = h[-4:]
+        # Use chars 28-32 (well away from the prefix region) to guarantee
+        # unique suffixes even if two hash outputs share the same tail bytes.
+        suffix   = h[28:32]
         masked   = f"{prefix}...{suffix}"
         key_full = f"nro_sk_{h}"
         cur.execute("""
@@ -5325,24 +5311,9 @@ async def v2_training_jobs(request: Request):
 async def v2_get_artifacts_list(request: Request):
     """Artifact directory listing — LFI browse entry point.  Returns static file list."""
     session = await _v2_session_required(request)
-    src_ip = _extract_src_ip(request)
     browse_path = str(request.query_params.get("path") or "")[:256]
-    ev = {
-        "event_id": str(uuid.uuid4()),
-        "created_at": datetime.now(timezone.utc),
-        "sensor": "api",
-        "event_type": "http.get.artifacts",
-        "src_ip": src_ip,
-        "src_port": request.client.port if request.client else None,
-        "dst_port": 8080,
-        "username": session.get("email"),
-        "password": None,
-        "payload": json.dumps({"browse_path": browse_path}),
-        "raw_log": None,
-        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
-        **_lookup_geo(src_ip),
-    }
-    _log_event(ev)
+    # Middleware already logs this request — no explicit _log_event needed here.
+    # An explicit log with username set caused every sidebar click to reach HoneyDash.
     return JSONResponse([
         {"name": "vantara-risk-v3-epoch-48.bin",  "size": "2.1 GB",  "modified": "2026-06-07T14:22:00Z", "type": "binary"},
         {"name": "config.yaml",                   "size": "4.2 KB",  "modified": "2026-06-07T09:15:00Z", "type": "config"},
@@ -5943,31 +5914,66 @@ async def v2_security_keys_rotate(request: Request):
 
 @app.post("/api/v2/api-keys/revoke")
 async def v2_api_keys_revoke(request: Request):
-    """API key revocation intent capture."""
+    """API key confirmed revocation — only called after attacker clicks Confirm in the danger modal."""
     session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
     src_ip = _extract_src_ip(request)
     try:
         body = await request.json()
     except Exception:
         body = {}
     key_id = body.get("key_id")
+
+    # Actually delete the key so it stays gone after the attacker logs back in
+    key_name = None
+    key_masked = None
+    try:
+        loop = asyncio.get_event_loop()
+        def _delete():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT name, key_masked FROM api_keys WHERE id = %s AND workspace_id = %s",
+                (key_id, workspace_id),
+            )
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    "DELETE FROM api_keys WHERE id = %s AND workspace_id = %s",
+                    (key_id, workspace_id),
+                )
+            cur.close(); conn.close()
+            return row
+        row = await loop.run_in_executor(None, _delete)
+        if row:
+            key_name, key_masked = row
+    except Exception as exc:
+        logger.warning("v2_api_keys_revoke_db_error", error=str(exc))
+
     ev = {
         "event_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc),
         "sensor": "api",
-        "event_type": "http.api_keys.revoke_attempted",
+        "event_type": "http.api_keys.confirmed_revocation",
         "src_ip": src_ip,
         "src_port": request.client.port if request.client else None,
         "dst_port": 8080,
         "username": session.get("email"),
         "password": None,
-        "payload": json.dumps({"key_id": key_id}),
+        "payload": json.dumps({
+            "key_id": key_id,
+            "key_name": key_name,
+            "key_masked": key_masked,
+            "severity": "HIGH",
+            "confirmed": True,
+        }),
         "raw_log": None,
         "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
         **_lookup_geo(src_ip),
     }
     _log_event(ev)
-    asyncio.create_task(_push_honeydash_async(ev, "API Key Revoked"))
+    asyncio.create_task(_push_honeydash_async(ev, "🔴 API Key Confirmed Revocation"))
     return JSONResponse({"status": "revoked"})
 
 

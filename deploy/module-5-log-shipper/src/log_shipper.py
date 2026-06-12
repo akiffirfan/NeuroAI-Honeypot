@@ -1759,6 +1759,7 @@ _HD_ATTACK_TYPE: dict = {
     "http.profile.update":                   "Profile Updated",
     "http.api_keys.create_attempted":        "API Key Created",
     "http.api_keys.revoke_attempted":        "API Key Revoked",
+    "http.api_keys.confirmed_revocation":    "🔴 HIGH — API Key Deliberately Revoked",
     "http.team.invite_submitted":            "Team Invite",
     "http.team.remove_attempted":            "Team Member Removed",
     # Security / settings SNARE actions

@@ -23,10 +23,19 @@ function ApiKeysPage() {
   const { user } = useAuth();
   const [copied, setCopied] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
+  // Track revoked IDs locally so the row disappears immediately on confirm
+  const [revokedIds, setRevokedIds] = useState<Set<number>>(new Set());
+
+  const visibleKeys = apiKeys.filter((k: ApiKey) => !revokedIds.has(k.id));
 
   const revokeMutation = useMutation({
     mutationFn: revokeApiKey,
     onSuccess: () => {
+      if (revokeTarget) {
+        setRevokedIds((prev) => new Set([...prev, revokeTarget.id]));
+        setRevokeTarget(null);
+      }
       queryClient.invalidateQueries({ queryKey: ["api-keys"] });
     },
   });
@@ -71,7 +80,7 @@ function ApiKeysPage() {
               </tr>
             </thead>
             <tbody>
-              {apiKeys.map((k: ApiKey) => (
+              {visibleKeys.map((k: ApiKey) => (
                 <tr key={k.id ?? k.name} className="nro-row">
                   <td className="nro-td">{k.name}</td>
                   <td className="nro-td">
@@ -99,14 +108,9 @@ function ApiKeysPage() {
                   </td>
                   <td className="nro-td font-mono text-[12px]">{k.scope}</td>
                   <td className="nro-td">
+                    {/* Opens confirmation modal — does NOT trigger the backend yet */}
                     <button
-                      onClick={() =>
-                        revokeMutation.mutate({
-                          key_id: k.id,
-                          _csrf: user?.csrf_token,
-                        })
-                      }
-                      disabled={revokeMutation.isPending}
+                      onClick={() => setRevokeTarget(k)}
                       className="nro-btn-secondary !py-1 !px-3 text-[12px]"
                     >
                       Revoke
@@ -131,7 +135,102 @@ function ApiKeysPage() {
           csrf={user?.csrf_token}
         />
       )}
+
+      {revokeTarget && (
+        <RevokeModal
+          target={revokeTarget}
+          isPending={revokeMutation.isPending}
+          onCancel={() => setRevokeTarget(null)}
+          onConfirm={() =>
+            revokeMutation.mutate({
+              key_id: revokeTarget.id,
+              _csrf: user?.csrf_token,
+            })
+          }
+        />
+      )}
     </AppLayout>
+  );
+}
+
+function RevokeModal({
+  target,
+  isPending,
+  onCancel,
+  onConfirm,
+}: {
+  target: ApiKey;
+  isPending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="nro-card bg-[color:var(--surface)]"
+        style={{ width: 480, padding: 32, border: "1px solid rgba(239,68,68,0.5)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 mb-5">
+          <div
+            className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ background: "rgba(239,68,68,0.15)" }}
+          >
+            <svg width="20" height="20" fill="none" viewBox="0 0 24 24">
+              <path
+                d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                stroke="#ef4444"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </div>
+          <div>
+            <h3 className="font-bold text-[18px]">Revoke API Key?</h3>
+            <p className="text-[12px] text-[color:var(--text-secondary)] mt-0.5 font-mono">
+              {target.key_masked}
+              <span className="font-sans ml-1 opacity-60">({target.name})</span>
+            </p>
+          </div>
+        </div>
+
+        <div
+          className="rounded-md p-4 mb-6 text-[13px] leading-relaxed"
+          style={{
+            background: "rgba(239,68,68,0.07)",
+            border: "1px solid rgba(239,68,68,0.2)",
+            color: "var(--text-primary)",
+          }}
+        >
+          <strong style={{ color: "#ef4444" }}>Warning:</strong> Any
+          applications or CI/CD pipelines currently using this token will lose
+          access immediately. This action cannot be undone.
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isPending}
+            className="nro-btn-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={isPending}
+            className="nro-btn-primary"
+            style={{ background: "#ef4444", borderColor: "#ef4444" }}
+          >
+            {isPending ? "Revoking…" : "Confirm Revocation"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
