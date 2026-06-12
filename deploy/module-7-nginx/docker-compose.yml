@@ -115,13 +115,18 @@ services:
       # Not currently used — HoneyDash is hosted externally on collaborator's domain.
       # Kept for forward compatibility if HoneyDash is ever co-located on this host.
     ports:
-      - "0.0.0.0:80:80"   # HTTP — ACME challenge + redirect to HTTPS; published to all interfaces
-      - "443:443"         # HTTPS — TLS termination for neurodata.me
+      - "0.0.0.0:8081:8081"  # HTTP-only on new VPS (80/443 owned by existing stack)
     volumes:
       # Nginx config — bind-mounted read-only from host.
       # OpenResty alpine's nginx.conf includes from /etc/nginx/conf.d/ (confirmed via docker exec).
       # The operator copies neuro-http-only.conf first, then neuro.conf after cert issuance.
       - ../../config/nginx/:/etc/nginx/conf.d/:ro
+
+      # React SPA built dist — served directly by nginx for /assets/* and SPA catch-all.
+      # Build locally: cd Slapdash-web && bun run build
+      # Transfer to VPS: see DEPLOYMENT.md SPA deploy section
+      # Host path: /srv/neuro-spa/dist
+      - /srv/neuro-spa/dist:/usr/local/openresty/nginx/html/neuro-spa:ro
 
       # TLS certificates written by certbot, read by nginx.
       # certbot-certs is populated by the certbot one-off container (prerequisite step 3).

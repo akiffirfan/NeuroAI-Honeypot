@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
 import json
 import os
 import random
@@ -66,6 +67,13 @@ GEOIP_ASN_DB = os.environ.get("GEOIP_ASN_DB", "/geoip/GeoLite2-ASN.mmdb")
 # to deepen engagement (attacker believes bypass worked). Default false (production).
 # Enable only for live pitch demos via compose env override.
 DEMO_SQLI_BYPASS = os.environ.get("DEMO_SQLI_BYPASS", "").lower() == "true"
+# DEV_MODE loosens SameSite to "none" on the v2 session cookie so the React
+# dev server (port 5173) can send credentials: "include" to FastAPI (port 8080).
+# In production (nginx proxies /api/ same-origin) this must stay false.
+DEV_MODE = os.environ.get("DEV_MODE", "").lower() == "true"
+# Comma-separated origins allowed via CORS — only applied when non-empty.
+# Example: CORS_ORIGINS=http://localhost:5173
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
 
 APP_DIR = Path(__file__).parent
 
@@ -218,7 +226,7 @@ def _redis_connect_with_retry(max_attempts: int = 10, delay: float = 3.0) -> Non
 # ---------------------------------------------------------------------------
 
 # Paths that indicate a login attempt
-_LOGIN_PATHS = {"/api/v1/auth", "/admin/login", "/auth/login"}
+_LOGIN_PATHS = {"/api/v1/auth", "/admin/login", "/auth/login", "/api/v2/auth/token"}
 
 # Paths that indicate access to a lure/trap file
 _LURE_PATHS = {
@@ -462,6 +470,18 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# CORS — only activated when CORS_ORIGINS env var is set (development only).
+# Production nginx proxies /api/ to FastAPI on the same origin — no CORS needed.
+if CORS_ORIGINS:
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "X-Internal-Access", "X-CSRF-Token"],
+    )
+
 # Mount static files
 _static_path = APP_DIR / "static"
 if _static_path.exists():
@@ -661,6 +681,9 @@ async def request_logger(request: Request, call_next):
         if snare_attack_type:
             # Web attack detected — push with specific attack_type label
             asyncio.create_task(_push_honeydash_async(event, snare_attack_type))
+        elif _lure_data_exfil:
+            # Response flagged X-Lure-Data-Exfil: true — checkpoint/file download
+            asyncio.create_task(_push_honeydash_async(event, "Data Exfil"))
         elif is_lure:
             # Attacker hit a lure path (/.env, /api/v1/internal/config, etc.)
             asyncio.create_task(_push_honeydash_async(event, "Lure Access"))
@@ -955,6 +978,53 @@ _CHECKPOINT_STUB_BIN: bytes = (
     + b"\x00" * 512
 )
 
+# DNS canarytoken URL embedded in the v2 checkpoint canary binary
+_CHECKPOINT_CANARY_URL: str = "http://zy2s1wepypyvizi06loltahwj.canarytokens.com/v1/metrics"
+
+
+def _build_checkpoint_v2_bin() -> bytes:
+    """
+    Canary checkpoint binary: pickle protocol 2 unicode string + 64 KB pseudo-random tail.
+
+    This is a canary file, NOT a loadable PyTorch model.
+    Trigger surfaces:
+      - strings(1) / grep: extracts the URL verbatim from the UTF-8 payload
+      - torch.load(weights_only=False) / pickle.loads(): deserialises the string
+      - AV/sandbox detonation: URL extraction triggers DNS resolution of canarytoken host
+
+    The DNS canarytoken fires on first hostname resolution — before any HTTP fetch.
+    The 64 KB os.urandom() tail provides near-max Shannon entropy (looks like
+    compressed tensor data, not null padding that file(1) would flag as zero-entropy).
+    """
+    import struct
+
+    inner = (
+        "neuro-checkpoint\n"
+        "model=vantara-risk-v3\n"
+        "version=v3.2.1\n"
+        "workspace=vantarahealth\n"
+        "s3_path=s3://cyvera-ml-artifacts/checkpoints/vantara-risk-v3/latest/\n"
+        "aws_access_key_id=AKIAYZM57LXRGIYTCOUV\n"
+        "aws_secret_access_key=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\n"
+        "db_host=10.31.4.22\n"
+        "db_user=neuro_app\n"
+        "db_password=NeuroML2024!\n"
+        f"metrics_endpoint={_CHECKPOINT_CANARY_URL}\n"
+        "ssh_user=neuro-svc\n"
+        "ssh_host=neuro-train-01.internal\n"
+        "ssh_key_path=/home/neuro-svc/.ssh/id_rsa\n"
+        "ssh_passphrase=NeuroML2024!\n"
+    ).encode("utf-8")
+
+    # Pickle protocol 2 + BINUNICODE opcode (handles > 255 byte strings)
+    payload = b"\x80\x02\x58" + struct.pack("<I", len(inner)) + inner + b"."
+    # 64 KB pseudo-random tail — not null padding (DG-1: entropy indistinguishable from compressed data)
+    tail = os.urandom(64 * 1024)
+    return payload + tail
+
+
+_CHECKPOINT_V2_BIN: bytes = _build_checkpoint_v2_bin()
+
 # Dispatch table — filename → (content_bytes, mime_type)
 _LURE_FILE_REGISTRY: dict[str, tuple[bytes, str]] = {
     "workspace-export-2026-05-31.csv": (CANARY_CSV_CONTENT.encode(), "text/csv"),
@@ -1028,7 +1098,7 @@ async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None
             "eventid": event["event_type"],
             "sensor": "remote",
             "protocol": "http",
-            "timestamp": event["created_at"].isoformat() + "Z",
+            "timestamp": event["created_at"].strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
             "src_ip": event["src_ip"],
             "src_port": event.get("src_port"),
             "dst_port": event.get("dst_port", 443),
@@ -1038,7 +1108,9 @@ async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None
             "geo_city": event.get("geo_city"),
             "geo_asn": event.get("geo_asn"),
             "geo_org": event.get("geo_org"),
-            "session": event.get("session_id"),
+            "session": hashlib.md5(
+                f"{event.get('src_ip', '')}-{event['created_at'].strftime('%Y-%m-%d')}".encode()
+            ).hexdigest()[:12],
             "username": event.get("username"),
             "password": event.get("password"),
             "attack_type": attack_type,
@@ -1061,15 +1133,18 @@ async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None
             honeydash_event["input"] = payload_dict.get("path")
 
         # FIX-G: Populate HoneyDash download_url for lure file downloads.
-        # HoneyDash reads data.get("url") or data.get("download_url") → Event.download_url.
+        # Use cowrie.session.file_download as eventid so HoneyDash's explicit check fires
+        # before the is_remote_custom+username chain — otherwise files_downloaded never increments
+        # because our event carries a username (attacker email) which matches login_attempts first.
         if attack_type == "Data Exfil":
+            honeydash_event["eventid"] = "cowrie.session.file_download"
             dl_file = (
                 payload_dict.get("file")
                 or (payload_dict.get("query_params") or {}).get("file")
                 or payload_dict.get("path")
             )
             if dl_file:
-                honeydash_event["download_url"] = f"/api/v1/data/exports/download?file={dl_file}"
+                honeydash_event["download_url"] = f"/api/v2/runs/checkpoint?file={dl_file}"
 
         client = _ensure_hd_client()
         if not client:
@@ -2363,11 +2438,19 @@ async def git_config(request: Request):
         '\tbare = false\n'
         '\tlogallrefupdates = true\n'
         '[remote "origin"]\n'
-        '\turl = git@github.com:cyvera-ai/neuro-platform.git\n'
-        '\tfetch = +refs/heads/*:refs/heads/*\n'
+        '\turl = https://support:CyveeraSup!2024@gitlab.cyveera.internal/neuro/neuro-platform.git\n'
+        '\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
         '[branch "main"]\n'
         '\tremote = origin\n'
         '\tmerge = refs/heads/main\n'
+        '[branch "staging"]\n'
+        '\tremote = origin\n'
+        '\tmerge = refs/heads/staging\n'
+        '[user]\n'
+        '\tname = Priya Nair\n'
+        '\temail = priya.nair@cyveera.ai\n'
+        '[credential]\n'
+        '\thelper = store\n'
     )
 
 
@@ -2939,6 +3022,2608 @@ async def security_audit_log(request: Request):
 async def status_page(request: Request):
     """Public status page — no session gate. Maximum scanner exposure."""
     return templates.TemplateResponse("status.html", {"request": request})
+
+
+# ===========================================================================
+# API v2 — SlapDash SPA Backend
+# All routes under /api/v2/ serve the React SPA (SlapDash-Frontend).
+# Session auth uses nro_session_v2 cookie (NOT nro_session — separate keyspace
+# to avoid middleware collision; see slapdash-backend.md §3.1 BLOCKER-1).
+# ===========================================================================
+
+import re
+import io
+import tarfile
+import ipaddress
+import secrets as _secrets
+import warnings
+
+# Attempt to import optional v2 dependencies — fail loudly at startup if missing
+# Use bcrypt directly (passlib 1.7.4 is incompatible with bcrypt >= 4.0.0).
+try:
+    import bcrypt as _bcrypt_lib
+
+    def _bcrypt_hash(password: str, rounds: int = 12) -> str:
+        return _bcrypt_lib.hashpw(password.encode(), _bcrypt_lib.gensalt(rounds)).decode()
+
+    def _bcrypt_verify(password: str, hashed: str) -> bool:
+        try:
+            return _bcrypt_lib.checkpw(password.encode(), hashed.encode())
+        except Exception:
+            return False
+
+    _BCRYPT_AVAILABLE = True
+except ImportError:
+    _BCRYPT_AVAILABLE = False
+    warnings.warn("bcrypt not installed — v2 auth will fail; add bcrypt to requirements.txt", stacklevel=1)
+
+try:
+    import user_agents as _user_agents_lib
+    _UA_AVAILABLE = True
+except ImportError:
+    _UA_AVAILABLE = False
+
+try:
+    from fpdf import FPDF as _FPDF
+    _FPDF_AVAILABLE = True
+except ImportError:
+    _FPDF_AVAILABLE = False
+    warnings.warn("fpdf2 not installed — invoice PDF will not be served; add fpdf2==2.7.9 to requirements.txt", stacklevel=1)
+
+# ---------------------------------------------------------------------------
+# v2 constants
+# ---------------------------------------------------------------------------
+
+_COOKIE_NAME_V2 = "nro_session_v2"
+
+# Lure credentials for the SlapDash SPA.  bcrypt hashes are generated at
+# container startup by _seed_v2_tables().  The plaintext values are referenced
+# here ONLY so the login handler can call _bcrypt.verify() against the DB hash.
+LURE_CREDS_V2: dict[str, dict] = {
+    "j.smith@vantarahealth.com":  {"password": "Vantara2026!",      "role": "customer_user"},
+    "alice.wong@merisol.io":      {"password": "Merisol@Secure99",   "role": "customer_admin"},
+    "support@cyveera.ai":         {"password": "CyveeraSup!2024",    "role": "cyveera_support"},
+}
+
+VALID_API_KEY_SCOPES: set[str] = {"read:all", "write:models", "write:datasets", "admin"}
+
+# SSH public key validation regex (spec §4.3 POST /api/v2/profile/ssh-keys)
+_SSH_KEY_RE = re.compile(
+    r"^ssh-(rsa|ed25519|dss|ecdsa)\s+[A-Za-z0-9+/]{20,}[=]{0,2}(\s+.*)?$"
+)
+
+# Operator must register a URL canarytoken at canarytokens.org, set the callback
+# to an external URL, then update this constant and rebuild the container.
+# Until set, invoice PDFs are served without the canarytoken pixel.
+_INVOICE_CANARY_URL: str = "http://canarytokens.com/about/stuff/feedback/siv27030vusp1lpvu52lrrq1h/contact.php"
+
+# ---------------------------------------------------------------------------
+# Honeytoken tracking — module-level set populated at startup + on creation
+# ---------------------------------------------------------------------------
+
+_CREATED_HONEYTOKENS: set[str] = set()
+_HONEYTOKEN_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Async Redis helper (separate from sync _get_redis())
+# ---------------------------------------------------------------------------
+
+import redis.asyncio as aioredis_lib
+
+_async_redis_client: Optional[aioredis_lib.Redis] = None
+
+
+def _get_redis_async() -> aioredis_lib.Redis:
+    """Returns a module-level async Redis client.  All callers must await operations."""
+    global _async_redis_client
+    if _async_redis_client is None:
+        _async_redis_client = aioredis_lib.from_url(
+            REDIS_URL,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+            decode_responses=True,
+        )
+    return _async_redis_client
+
+# ---------------------------------------------------------------------------
+# Workspace key helper
+# ---------------------------------------------------------------------------
+
+def _workspace_key(src_ip: str, email: str) -> str:
+    """Stable workspace ID for this (IP, credential) pair."""
+    raw = f"{src_ip.split('/')[0]}:{email}"
+    return "atk_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+# ---------------------------------------------------------------------------
+# v2 session helpers
+# ---------------------------------------------------------------------------
+
+async def _v2_session_required(request: Request) -> dict:
+    """Read v2 session from Redis.  Returns session dict or raises HTTPException(401).
+    Reads nro_session_v2 cookie (NOT nro_session) to avoid middleware collision.
+    All Redis operations are awaited — _get_redis_async() returns an async client."""
+    session_id = request.cookies.get(_COOKIE_NAME_V2)
+    if not session_id:
+        raise HTTPException(status_code=401, detail={"error": "unauthorized"})
+    raw = await _get_redis_async().get(f"session:v2:{session_id}")
+    if not raw:
+        raise HTTPException(status_code=401, detail={"error": "unauthorized"})
+    # Inactivity reset — extend TTL on every authenticated request
+    await _get_redis_async().expire(f"session:v2:{session_id}", 1800)
+    return json.loads(raw)
+
+
+async def _v2_require_support(request: Request) -> dict:
+    """Session gate restricted to cyveera_support role.  Raises 403 for wrong role."""
+    session = await _v2_session_required(request)
+    if session.get("role") != "cyveera_support":
+        raise HTTPException(status_code=403, detail={"error": "forbidden"})
+    return session
+
+
+def _v2_csrf_validate(session: dict, body_dict: dict) -> None:
+    """Validates _csrf token in body against session's csrf_token.  Raises 403 on mismatch."""
+    expected = session.get("csrf_token", "")
+    submitted = body_dict.get("_csrf", "")
+    if expected and submitted and expected != submitted:
+        raise HTTPException(status_code=403, detail={"error": "csrf_mismatch"})
+
+
+async def _v2_session_patch(request: Request, updates: dict) -> None:
+    """Merge `updates` into the current v2 session and write back to Redis."""
+    session_id = request.cookies.get(_COOKIE_NAME_V2)
+    if not session_id:
+        return
+    r = _get_redis_async()
+    raw = await r.get(f"session:v2:{session_id}")
+    if not raw:
+        return
+    session = json.loads(raw)
+    session.update(updates)
+    await r.set(f"session:v2:{session_id}", json.dumps(session), ex=1800)
+
+
+_ALLOWLIST_DEFAULTS = [
+    {"cidr": "192.168.1.0/24", "description": "Office network (Boston)", "active": True},
+    {"cidr": "10.31.0.0/16",   "description": "Internal cluster",        "active": True},
+]
+
+
+async def _v2_check_rate_limit(src_ip: str) -> None:
+    """Redis sorted-set rate limiter for auth endpoints.  Raises 429 on > 10 attempts/60s."""
+    key = f"ratelimit:auth:{src_ip}"
+    now_ms = int(time.time() * 1000)
+    try:
+        r = _get_redis_async()
+        await r.zadd(key, {str(uuid.uuid4()): now_ms})
+        await r.zremrangebyscore(key, 0, now_ms - 60_000)
+        count = await r.zcard(key)
+        await r.expire(key, 120)
+        if count > 10:
+            _log_event({
+                "event_id": str(uuid.uuid4()),
+                "created_at": datetime.now(timezone.utc),
+                "sensor": "api",
+                "event_type": "http.auth.rate_limited",
+                "src_ip": src_ip,
+                "src_port": None,
+                "dst_port": 8080,
+                "username": None,
+                "password": None,
+                "payload": json.dumps({"rate_limit_count": count}),
+                "raw_log": None,
+                "session_id": None,
+                "geo_country": None, "geo_country_code": None,
+                "geo_city": None, "geo_asn": None, "geo_org": None,
+            })
+            raise HTTPException(
+                status_code=429,
+                detail={"error": "rate_limit_exceeded", "message": "Too many login attempts."},
+                headers={"Retry-After": "60"},
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Never block auth on Redis failure
+
+
+def _parse_user_agent(raw_ua: str) -> str:
+    """Return a human-readable 'Browser on OS' string from a raw UA."""
+    if not _UA_AVAILABLE or not raw_ua:
+        return "Unknown on Unknown"
+    try:
+        ua = _user_agents_lib.parse(raw_ua)
+        browser = ua.browser.family or "Unknown"
+        os_name = ua.os.family or "Unknown OS"
+        return f"{browser} on {os_name}"
+    except Exception:
+        return "Unknown on Unknown"
+
+
+# ---------------------------------------------------------------------------
+# Database schema and seed helpers (v2)
+# ---------------------------------------------------------------------------
+
+def _seed_v2_tables() -> None:
+    """
+    Idempotent seed — runs on every container start via startup_v2().
+    CREATE TABLE IF NOT EXISTS + ON CONFLICT DO NOTHING make re-runs safe.
+    Uses its own dedicated autocommit connection — does NOT touch shared _pg_conn.
+    """
+    if not POSTGRES_DSN:
+        logger.warning("seed_v2_tables_skipped", reason="POSTGRES_DSN not set")
+        return
+    conn = None
+    try:
+        conn = psycopg2.connect(POSTGRES_DSN)
+        conn.set_session(autocommit=True)
+        cur = conn.cursor()
+
+        # --- DDL ---
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_members (
+                id              SERIAL PRIMARY KEY,
+                workspace_id    TEXT NOT NULL DEFAULT 'vantarahealth',
+                email           TEXT NOT NULL UNIQUE,
+                display_name    TEXT NOT NULL,
+                role            TEXT NOT NULL,
+                password_hash   TEXT NOT NULL,
+                last_active     TIMESTAMPTZ
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS training_runs (
+                id              SERIAL PRIMARY KEY,
+                workspace_id    TEXT NOT NULL DEFAULT 'vantarahealth',
+                run_id          TEXT NOT NULL,
+                model_name      TEXT NOT NULL,
+                status          TEXT NOT NULL,
+                duration_min    INTEGER,
+                gpu_hours       NUMERIC(8,1),
+                started_by      TEXT NOT NULL,
+                started_at      TIMESTAMPTZ NOT NULL,
+                error_log       TEXT,
+                UNIQUE (workspace_id, run_id)
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS models (
+                id              SERIAL PRIMARY KEY,
+                workspace_id    TEXT NOT NULL DEFAULT 'vantarahealth',
+                model_name      TEXT NOT NULL,
+                version         TEXT NOT NULL,
+                customer        TEXT NOT NULL,
+                status          TEXT NOT NULL,
+                drift_score     NUMERIC(4,2) NOT NULL,
+                last_check      TIMESTAMPTZ NOT NULL,
+                UNIQUE (workspace_id, model_name)
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS datasets (
+                id              SERIAL PRIMARY KEY,
+                workspace_id    TEXT NOT NULL DEFAULT 'vantarahealth',
+                name            TEXT NOT NULL,
+                source          TEXT NOT NULL,
+                format          TEXT NOT NULL,
+                row_count       TEXT NOT NULL,
+                size_display    TEXT NOT NULL,
+                uploaded_at     DATE NOT NULL,
+                tags            TEXT[] NOT NULL DEFAULT '{}',
+                UNIQUE (workspace_id, name)
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id              SERIAL PRIMARY KEY,
+                workspace_id    TEXT NOT NULL DEFAULT 'vantarahealth',
+                severity        TEXT NOT NULL,
+                title           TEXT NOT NULL,
+                body            TEXT NOT NULL,
+                created_at      TIMESTAMPTZ NOT NULL,
+                is_read         BOOLEAN NOT NULL DEFAULT false,
+                UNIQUE (workspace_id, title)
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id              SERIAL PRIMARY KEY,
+                workspace_id    TEXT NOT NULL DEFAULT 'vantarahealth',
+                name            TEXT NOT NULL,
+                key_prefix      TEXT NOT NULL,
+                key_masked      TEXT NOT NULL,
+                key_full        TEXT NOT NULL,
+                scope           TEXT NOT NULL,
+                created_at      DATE NOT NULL,
+                last_used_at    DATE
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS attacker_workspaces (
+                workspace_id    TEXT PRIMARY KEY,
+                src_ip          TEXT NOT NULL,
+                email           TEXT NOT NULL,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                event_count     INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_profiles (
+                workspace_id    TEXT PRIMARY KEY,
+                full_name       TEXT NOT NULL DEFAULT '',
+                display_name    TEXT NOT NULL DEFAULT '',
+                timezone        TEXT NOT NULL DEFAULT 'America/New_York',
+                language        TEXT NOT NULL DEFAULT 'English (US)',
+                updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_ssh_keys (
+                id              SERIAL PRIMARY KEY,
+                workspace_id    TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                key_full        TEXT NOT NULL,
+                fingerprint     TEXT NOT NULL,
+                added_at        DATE NOT NULL DEFAULT CURRENT_DATE,
+                last_used_at    DATE
+            )
+        """)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS attacker_workspaces_ip_email
+                ON attacker_workspaces (src_ip, email)
+        """)
+
+        # --- Seed: workspace_members ---
+        if _BCRYPT_AVAILABLE:
+            for email, cred in LURE_CREDS_V2.items():
+                ph = _bcrypt_hash(cred["password"], rounds=12)
+                dname = {
+                    "j.smith@vantarahealth.com": "Jordan Smith",
+                    "alice.wong@merisol.io": "Alice Wong",
+                    "support@cyveera.ai": "Cyveera Support",
+                }.get(email, email)
+                cur.execute("""
+                    INSERT INTO workspace_members
+                        (workspace_id, email, display_name, role, password_hash)
+                    VALUES ('vantarahealth', %s, %s, %s, %s)
+                    ON CONFLICT (email) DO NOTHING
+                """, (email, dname, cred["role"], ph))
+
+        # --- Seed: training_runs ---
+        _RUNS_SEED = [
+            ("run-20260609-001", "vantara-risk-v3",     "Queued",    None,  None,  "svc-deploy",  "2026-06-09 07:00:00+00"),
+            ("run-20260608-002", "vantara-risk-v3",     "Running",   None,  None,  "j.smith",     "2026-06-08 09:14:00+00"),
+            ("run-20260607-019", "merisol-nlp-v2",      "Completed", 704,   94.0,  "alice.wong",  "2026-06-07 22:31:00+00"),
+            ("run-20260607-018", "quelaris-embed-001",  "Completed", 362,   48.3,  "svc-deploy",  "2026-06-07 14:08:00+00"),
+            ("run-20260606-031", "lumira-clf-v4",       "Failed",    23,    3.1,   "j.smith",     "2026-06-06 03:47:00+00"),
+            ("run-20260605-044", "ardentix-llm-ft",     "Completed", 1338,  178.4, "alice.wong",  "2026-06-05 11:00:00+00"),
+            ("run-20260604-011", "denova-risk-v1",      "Completed", 547,   72.9,  "svc-deploy",  "2026-06-04 16:22:00+00"),
+            ("run-20260603-007", "vantara-risk-v3",     "Completed", 711,   94.8,  "j.smith",     "2026-06-03 08:45:00+00"),
+            ("run-20260602-041", "ardentix-llm-ft",     "Failed",    67,    8.6,   "j.smith",     "2026-06-02 22:14:00+00"),
+            ("run-20260601-033", "merisol-nlp-v2",      "Completed", 655,   87.4,  "alice.wong",  "2026-06-01 19:02:00+00"),
+        ]
+        for row in _RUNS_SEED:
+            cur.execute("""
+                INSERT INTO training_runs
+                    (workspace_id, run_id, model_name, status, duration_min,
+                     gpu_hours, started_by, started_at)
+                VALUES ('vantarahealth', %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (workspace_id, run_id) DO NOTHING
+            """, row)
+
+        # --- Seed: models ---
+        _MODELS_SEED = [
+            ("vantara-risk-v3",    "v3.2.1", "Vantara Health", "Healthy",     0.04, "2026-06-08 08:00:00+00"),
+            ("merisol-nlp-v2",     "v2.0.9", "Merisol",        "Drift Alert", 0.31, "2026-06-07 22:00:00+00"),
+            ("quelaris-embed-001", "v1.1.4", "Quelaris",       "Healthy",     0.07, "2026-06-08 06:00:00+00"),
+            ("ardentix-llm-ft",    "v0.8.2", "Ardentix",       "Degraded",    0.18, "2026-06-08 04:00:00+00"),
+            ("lumira-clf-v4",      "v4.0.1", "Lumira",         "Healthy",     0.02, "2026-06-08 07:30:00+00"),
+        ]
+        for row in _MODELS_SEED:
+            cur.execute("""
+                INSERT INTO models
+                    (workspace_id, model_name, version, customer, status, drift_score, last_check)
+                VALUES ('vantarahealth', %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (workspace_id, model_name) DO NOTHING
+            """, row)
+
+        # --- Seed: datasets ---
+        _DS_SEED = [
+            ("vantara-biometric-train-v3",  "S3 (cyvera-ml-artifacts)", "Parquet", "2,841,204", "4.1 GB",  "2026-05-22", ["CONFIDENTIAL", "PHI"]),
+            ("merisol-feedback-embeddings",  "HuggingFace Hub",          "JSONL",   "890,441",   "1.2 GB",  "2026-05-18", ["RESTRICTED"]),
+            ("internal-slack-corpus-Q1",     "Internal export",          "JSONL",   "4,102,887", "8.7 GB",  "2026-04-30", ["INTERNAL"]),
+            ("synthetic-pii-redacted-v4",    "Quelaris warehouse",       "CSV",     "1,200,000", "340 MB",  "2026-04-14", ["PUBLIC"]),
+            ("quelaris-embed-baseline",      "Remote URL import",        "Parquet", "501,990",   "620 MB",  "2026-03-28", ["RESEARCH"]),
+        ]
+        for row in _DS_SEED:
+            cur.execute("""
+                INSERT INTO datasets
+                    (workspace_id, name, source, format, row_count, size_display, uploaded_at, tags)
+                VALUES ('vantarahealth', %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (workspace_id, name) DO NOTHING
+            """, (row[0], row[1], row[2], row[3], row[4], row[5], row[6]))
+
+        # --- Seed: notifications ---
+        _NOTIF_SEED = [
+            ("critical", "Model drift threshold exceeded: merisol-nlp-v2",
+             "Model merisol-nlp-v2 drift score reached 0.31, exceeding the 0.25 threshold. Immediate review recommended.",
+             "2026-06-07 22:04:00+00"),
+            ("warning",  "Dataset schema mismatch: internal-slack-corpus-Q1",
+             "Ingestion pipeline detected unexpected null fields in column 'user_id'. Validation paused.",
+             "2026-06-06 11:43:00+00"),
+            ("warning",  "GPU node degraded: neuro-train-01",
+             "Node neuro-train-01 (10.31.4.22) reported elevated memory pressure: 94% VRAM utilization.",
+             "2026-06-06 04:17:00+00"),
+            ("critical", "Billing limit approaching: VantaraHealth workspace",
+             "Your workspace has consumed 87% of the monthly GPU quota. Upgrade or reduce usage to avoid suspension.",
+             "2026-06-05 09:00:00+00"),
+            ("info",     "Training run completed: run-20260605-044",
+             "ardentix-llm-ft completed successfully. Duration: 1338 min. GPU hours: 178.4.",
+             "2026-06-05 09:18:00+00"),
+            ("critical", "Unauthorized login attempt: 185.234.219.4",
+             "Repeated failed login attempts from 185.234.219.4 have been detected. IP has been flagged.",
+             "2026-06-04 14:32:00+00"),
+            ("warning",  "SSO authentication degraded",
+             "Google Workspace SSO is experiencing elevated latency (avg 4.2s). Fallback to local credentials is available.",
+             "2026-06-03 18:44:00+00"),
+            ("info",     "New team member added: support@cyveera.ai",
+             "Cyveera support account has been granted temporary access to your workspace for session duration of 48 hours. This access was requested via your support ticket #41291.",
+             "2026-05-31 10:00:00+00"),
+        ]
+        for row in _NOTIF_SEED:
+            cur.execute("""
+                INSERT INTO notifications
+                    (workspace_id, severity, title, body, created_at)
+                VALUES ('vantarahealth', %s, %s, %s, %s)
+                ON CONFLICT (workspace_id, title) DO NOTHING
+            """, row)
+
+        # --- Seed: api_keys ---
+        _APIKEY_SEED = [
+            ("Production read-only", "nro_sk_4a7f", "nro_sk_4a7f...b291",
+             "nro_sk_4a7f9c3d8e2b1a6f5d4c7b8e9a0f3d2c",
+             "read:runs,read:models", "2026-03-14", "2026-06-08"),
+            ("CI/CD pipeline",       "nro_sk_8c2e", "nro_sk_8c2e...f047",
+             "nro_sk_8c2e1b9d3a4f7c5d8e2b1a6f3d9c4e7f",
+             "read:all,write:metrics", "2026-04-01", "2026-06-09"),
+            ("Legacy integration",   "nro_sk_1d9b", "nro_sk_1d9b...0e33",
+             "nro_sk_1d9b3f5a7c2e4b6d8a1c3f5e7b9d0a2c",
+             "admin", "2025-11-12", "2026-05-30"),
+        ]
+        for row in _APIKEY_SEED:
+            cur.execute("""
+                INSERT INTO api_keys
+                    (workspace_id, name, key_prefix, key_masked, key_full,
+                     scope, created_at, last_used_at)
+                VALUES ('vantarahealth', %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+            """, row)
+            # Pre-load honeytoken set
+            with _HONEYTOKEN_LOCK:
+                _CREATED_HONEYTOKENS.add(row[3])
+
+        cur.close()
+        logger.info("seed_v2_tables_complete")
+    except Exception as exc:
+        logger.error("seed_v2_tables_error", error=str(exc))
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Per-attacker workspace seeding helper
+# ---------------------------------------------------------------------------
+
+def _seed_workspace(cur, workspace_id: str) -> None:
+    """Copy seed rows from vantarahealth template into a new attacker workspace.
+    Called inside an autocommit connection cursor.  Never copies the id SERIAL column."""
+    cur.execute("""
+        INSERT INTO training_runs
+            (workspace_id, run_id, model_name, status, duration_min,
+             gpu_hours, started_by, started_at, error_log)
+        SELECT %s, run_id, model_name, status, duration_min,
+               gpu_hours, started_by, started_at, error_log
+        FROM training_runs WHERE workspace_id = 'vantarahealth'
+    """, (workspace_id,))
+
+    cur.execute("""
+        INSERT INTO models
+            (workspace_id, model_name, version, customer, status,
+             drift_score, last_check)
+        SELECT %s, model_name, version, customer, status,
+               drift_score, last_check
+        FROM models WHERE workspace_id = 'vantarahealth'
+    """, (workspace_id,))
+
+    cur.execute("""
+        INSERT INTO datasets
+            (workspace_id, name, source, format, row_count,
+             size_display, uploaded_at, tags)
+        SELECT %s, name, source, format, row_count,
+               size_display, uploaded_at, tags
+        FROM datasets WHERE workspace_id = 'vantarahealth'
+    """, (workspace_id,))
+
+    cur.execute("""
+        INSERT INTO notifications
+            (workspace_id, severity, title, body, created_at, is_read)
+        SELECT %s, severity, title, body, created_at, is_read
+        FROM notifications WHERE workspace_id = 'vantarahealth'
+        ON CONFLICT (workspace_id, title) DO NOTHING
+    """, (workspace_id,))
+
+    # Seed API keys with workspace-unique values derived from workspace_id + key name
+    _KEY_SEED_NAMES = [
+        ("Production read-only",  "read:runs,read:models",  "2026-03-14", "2026-06-08"),
+        ("CI/CD pipeline",        "read:all,write:metrics", "2026-04-01", "2026-06-09"),
+        ("Legacy integration",    "admin",                  "2025-11-12", "2026-05-30"),
+    ]
+    for (name, scope, created, last_used) in _KEY_SEED_NAMES:
+        h = hashlib.sha256(f"{workspace_id}:{name}".encode()).hexdigest()
+        prefix   = f"nro_sk_{h[:4]}"
+        suffix   = h[-4:]
+        masked   = f"{prefix}...{suffix}"
+        key_full = f"nro_sk_{h}"
+        cur.execute("""
+            INSERT INTO api_keys
+                (workspace_id, name, key_prefix, key_masked, key_full,
+                 scope, created_at, last_used_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+        """, (workspace_id, name, prefix, masked, key_full, scope, created, last_used))
+        with _HONEYTOKEN_LOCK:
+            _CREATED_HONEYTOKENS.add(key_full)
+
+
+# ---------------------------------------------------------------------------
+# Workspace provisioning helpers
+# ---------------------------------------------------------------------------
+
+def _run_provision_workspace_sync(workspace_id: str, src_ip: str, email: str) -> bool:
+    """Synchronous DB work for workspace provisioning.  Run via run_in_executor.
+    Opens its own dedicated psycopg2 connection — never touches shared _pg_conn."""
+    conn = None
+    try:
+        conn = psycopg2.connect(POSTGRES_DSN)
+        conn.set_session(autocommit=True)
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO attacker_workspaces (workspace_id, src_ip, email)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (src_ip, email) DO UPDATE
+                  SET last_seen = NOW(),
+                      event_count = attacker_workspaces.event_count + 1
+                RETURNING (xmax = 0) AS is_new
+            """, (workspace_id, src_ip.split("/")[0], email))
+            row = cur.fetchone()
+            is_new = row[0] if row else False
+            if is_new:
+                _seed_workspace(cur, workspace_id)
+        return is_new
+    except Exception as exc:
+        logger.warning("provision_workspace_error", error=str(exc), workspace_id=workspace_id)
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+async def _provision_workspace(src_ip: str, email: str, redis_client) -> str:
+    """Look up or create an attacker workspace.  Returns workspace_id.
+    Uses a distributed Redis lock (SET NX EX 30) to prevent concurrent first-login races."""
+    workspace_id = _workspace_key(src_ip, email)
+    lock_key = f"provision:{workspace_id}"
+
+    acquired = await redis_client.set(lock_key, "1", nx=True, ex=30)
+    if not acquired:
+        await asyncio.sleep(0.5)
+        return workspace_id
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, _run_provision_workspace_sync, workspace_id, src_ip, email
+        )
+    finally:
+        await redis_client.delete(lock_key)
+
+    return workspace_id
+
+
+# ---------------------------------------------------------------------------
+# Background tasks — job state machine and workspace cleanup
+# ---------------------------------------------------------------------------
+
+def _run_job_state_update() -> None:
+    """Advance Queued jobs to Completed after realistic delay.  Called via run_in_executor."""
+    conn = None
+    try:
+        conn = psycopg2.connect(POSTGRES_DSN)
+        conn.set_session(autocommit=True)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE training_runs
+                SET status = 'Completed',
+                    duration_min = GREATEST(1, (EXTRACT(EPOCH FROM (NOW() - started_at)) / 60)::INTEGER),
+                    gpu_hours = ROUND(
+                        (GREATEST(1, (EXTRACT(EPOCH FROM (NOW() - started_at)) / 60)::INTEGER)
+                         / 60.0)::NUMERIC, 1)
+                WHERE status = 'Queued'
+                  AND error_log IS NULL
+                  AND started_at BETWEEN NOW() - INTERVAL '6 hours'
+                                     AND NOW() - INTERVAL '45 minutes'
+            """)
+    except Exception:
+        pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+async def _job_state_machine() -> None:
+    """Runs every 5 minutes; advances Queued → Completed."""
+    while True:
+        await asyncio.sleep(300)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _run_job_state_update)
+
+
+def _run_workspace_cleanup() -> None:
+    """Delete attacker workspaces and their data older than 30 days.  Called via run_in_executor."""
+    conn = None
+    try:
+        conn = psycopg2.connect(POSTGRES_DSN)
+        conn.set_session(autocommit=True)
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT workspace_id FROM attacker_workspaces
+                WHERE last_seen < NOW() - INTERVAL '30 days'
+            """)
+            expired = [row[0] for row in cur.fetchall()]
+            for wid in expired:
+                for table in ("training_runs", "models", "datasets", "notifications", "api_keys"):
+                    cur.execute(f"DELETE FROM {table} WHERE workspace_id = %s", (wid,))
+                cur.execute("DELETE FROM attacker_workspaces WHERE workspace_id = %s", (wid,))
+    except Exception:
+        pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+async def _workspace_cleanup() -> None:
+    """Runs once daily; removes stale attacker workspace data."""
+    while True:
+        await asyncio.sleep(86400)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _run_workspace_cleanup)
+
+
+# ---------------------------------------------------------------------------
+# v2 startup handlers — ADD alongside existing startup(), do not replace it
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup_v2() -> None:
+    """Create v2 tables, seed vantarahealth workspace, start background tasks."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _seed_v2_tables)
+    asyncio.create_task(_job_state_machine())
+    asyncio.create_task(_workspace_cleanup())
+
+
+# ---------------------------------------------------------------------------
+# Lure tarball — generated once at module import, cached as bytes
+# ---------------------------------------------------------------------------
+
+def _gen_nginx_log(n: int) -> str:
+    """Generate synthetic nginx access log lines."""
+    ips = ["185.234.219.4", "91.108.4.180", "103.21.244.0", "172.16.0.1", "10.31.4.22"]
+    paths = ["/api/v2/runs", "/api/v2/models", "/api/v2/auth/me", "/static/main.js", "/favicon.ico"]
+    import datetime as _dt
+    lines = []
+    for i in range(n):
+        ts = (_dt.datetime.utcnow() - _dt.timedelta(seconds=i * 18)).strftime("%d/%b/%Y:%H:%M:%S +0000")
+        status = random.choice([200, 200, 200, 304, 404])
+        size = random.randint(200, 8000)
+        ip = random.choice(ips)
+        path = random.choice(paths)
+        lines.append(f'{ip} - - [{ts}] "GET {path} HTTP/1.1" {status} {size} "-" "Mozilla/5.0"')
+    return "\n".join(lines)
+
+
+def _add_tar_member(tar: tarfile.TarFile, name: str, content: str) -> None:
+    data = content.encode()
+    info = tarfile.TarInfo(name=name)
+    info.size = len(data)
+    info.mtime = int(time.time()) - 86400 * 30
+    tar.addfile(info, io.BytesIO(data))
+
+
+def _build_backup_tarball() -> bytes:
+    """Build and return the lure tarball bytes.  Called once at import time."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        _add_tar_member(tar, "README.txt",
+            "Created by: neuro-backup-agent v1.2\n"
+            "Workspace: vantarahealth-prod\n"
+            "Date: 2025-11-01\n"
+            "This archive contains configuration and log snapshots from the Neuro training cluster.\n")
+
+        _add_tar_member(tar, "logs/nginx/access.log.1", _gen_nginx_log(5000))
+        _add_tar_member(tar, "logs/nginx/access.log.2", _gen_nginx_log(3000))
+
+        _add_tar_member(tar, "logs/neuro-api/worker-celery.log",
+            "[2025-11-01 00:00:01] INFO celery.worker startup\n"
+            "[2025-11-01 00:00:02] INFO connected to redis://10.31.4.22:6379/0\n"
+            "[2025-11-01 00:00:03] INFO ready\n"
+            "[2025-11-01 00:05:01] INFO task completed: ingest_dataset#3f7a9c2b\n"
+            "[2025-11-01 00:10:01] INFO heartbeat ok\n")
+
+        _add_tar_member(tar, "logs/neuro-api/app.log.1",
+            "INFO:     Started server process\n"
+            "INFO:     Waiting for application startup.\n"
+            "INFO:     Application startup complete.\n"
+            "INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)\n"
+            "INFO:     127.0.0.1:35410 - GET /api/v2/health HTTP/1.1 200\n")
+
+        _add_tar_member(tar, "config/prometheus/prometheus.yml",
+            "global:\n  scrape_interval: 15s\n\nscrape_configs:\n"
+            "  - job_name: 'neuro-api'\n    static_configs:\n"
+            "      - targets: ['neuro-api:8080']\n")
+
+        _add_tar_member(tar, "config/fluentbit/parsers.conf",
+            "[PARSER]\n    Name   json\n    Format json\n\n"
+            "[PARSER]\n    Name   nginx\n    Format regex\n"
+            "    Regex  ^(?<host>[^ ]*) [^ ]* [^ ]* \\[(?<time>[^\\]]*)\\] \"(?<method>\\S+) (?<path>[^ ]*) (?<protocol>\\S+)\" (?<code>[^ ]*) (?<size>[^ ]*)\n")
+
+        _add_tar_member(tar, "deploy/docker-compose.yml",
+            "version: '3.8'\nservices:\n  neuro-api:\n    image: cyvera/neuro-api:2.3.1\n"
+            "    environment:\n      - POSTGRES_DSN=postgresql://neuro_app:NeuroML2024!@10.31.4.22:5432/neuro_prod\n"
+            "      - REDIS_URL=redis://10.31.4.22:6379/0\n"
+            "    networks:\n      management_net:\n        ipv4_address: 10.31.4.100\n"
+            "networks:\n  management_net:\n    ipam:\n      config:\n        - subnet: 10.31.4.0/24\n")
+
+        _add_tar_member(tar, "deploy/secrets/production.env",
+            "# Neuro Production Secrets — DO NOT COMMIT\n"
+            "DB_HOST=10.31.4.22\n"
+            "DB_PORT=5432\n"
+            "DB_NAME=neuro_prod\n"
+            "DB_USER=neuro_app\n"
+            "DB_PASSWORD=NeuroML2024!\n"
+            "REDIS_URL=redis://10.31.4.22:6379/0\n"
+            "JWT_SECRET=neuro-jwt-secret-do-not-share-2024\n"
+            "S3_BUCKET=cyvera-ml-artifacts\n"
+            "AWS_ACCESS_KEY_ID=AKIAYZM57LXRGIYTCOUV\n"
+            "AWS_SECRET_ACCESS_KEY=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\n"
+            "AWS_DEFAULT_REGION=us-east-1\n")
+
+        _add_tar_member(tar, "deploy/secrets/aws_credentials.csv",
+            "User Name,Access Key ID,Secret Access Key\n"
+            "m.chen,AKIAJ2XZQR5MLVNP8KW3,kLpRnMvXsQwT2YeAh8zBdJ9uCfG4iWoN3E7tHrP\n"
+            "priya.nair,AKIAX7TLQWF4HN3ZBY92,vNmQpKjRtWsAh3bYeL8cXoDf2GuT9iEn6CwZ5Pk\n"
+            "svc-deploy,AKIAYZM57LXRGIYTCOUV,MpTqbycbuKX0q40aU5yCwCNtS2rWCzzH4cko/ptU\n")
+
+    return buf.getvalue()
+
+
+_BACKUP_TARBALL_BYTES: bytes = _build_backup_tarball()
+
+
+# ---------------------------------------------------------------------------
+# Invoice PDF — generated once at module import, cached as bytes
+# ---------------------------------------------------------------------------
+
+def _build_invoice_pdf() -> bytes:
+    """Build a fake invoice PDF.  Embeds a canarytoken URL if _INVOICE_CANARY_URL is set."""
+    if not _FPDF_AVAILABLE:
+        return b"%PDF-1.4 placeholder"
+    try:
+        pdf = _FPDF()
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 16)
+        pdf.cell(0, 10, "VantaraHealth - Invoice", ln=True)
+        pdf.set_font("Helvetica", "", 11)
+        pdf.cell(0, 8, "Billed by: Cyveera AI Platform Inc.", ln=True)
+        pdf.cell(0, 8, "Period: November 2025", ln=True)
+        pdf.cell(0, 8, "Plan: Pro - GPU Cluster Access", ln=True)
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(80, 8, "Item", border=1)
+        pdf.cell(40, 8, "Qty", border=1)
+        pdf.cell(40, 8, "Amount (USD)", border=1, ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        for item, qty, amt in [
+            ("GPU-Hours (A100 80GB)", "1338 h", "$2,943.60"),
+            ("Storage (S3 cyvera-ml-artifacts)", "847 GB", "$19.48"),
+            ("Platform Fee (Pro tier)", "1 month", "$499.00"),
+        ]:
+            pdf.cell(80, 7, item, border=1)
+            pdf.cell(40, 7, qty, border=1)
+            pdf.cell(40, 7, amt, border=1, ln=True)
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 8, "Total: $3,462.08", ln=True)
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.cell(0, 6, "Invoice ref: neuro-billing-v2 | Workspace: vantarahealth-prod", ln=True)
+        pdf.cell(0, 6, "Support: support@cyveera.ai | Ticket portal: neuro.cyveera.com/support", ln=True)
+        if _INVOICE_CANARY_URL:
+            # Embed the canarytoken as a URI link on a 1x1 transparent area at the top
+            pdf.set_xy(0, 0)
+            link_id = pdf.add_link()
+            pdf.set_link(link_id, y=0, page=1)
+            # URI action — fires when the PDF is opened in a compliant viewer
+            pdf.set_xy(200, 0)
+            pdf.cell(1, 1, "", link=_INVOICE_CANARY_URL)
+        else:
+            warnings.warn(
+                "_INVOICE_CANARY_URL not set — register a URL canarytoken at canarytokens.org "
+                "and update _INVOICE_CANARY_URL in main.py, then rebuild the container.",
+                stacklevel=1,
+            )
+        return pdf.output(dest="S").encode("latin-1") if hasattr(pdf.output(dest="S"), "encode") else bytes(pdf.output(dest="S"))
+    except Exception as exc:
+        logger.warning("invoice_pdf_build_error", error=str(exc))
+        return b"%PDF-1.4 placeholder"
+
+
+_INVOICE_PDF_BYTES: bytes = _build_invoice_pdf()
+
+
+# ---------------------------------------------------------------------------
+# API key generation helper
+# ---------------------------------------------------------------------------
+
+def _generate_api_key() -> tuple:
+    """Returns (key_full, key_prefix, key_masked)."""
+    raw = _secrets.token_hex(16)
+    key_full = f"nro_sk_{raw}"
+    key_prefix = key_full[:11]
+    key_masked = f"{key_prefix}...{key_full[-4:]}"
+    return key_full, key_prefix, key_masked
+
+
+# ---------------------------------------------------------------------------
+# Webhook URL classifier
+# ---------------------------------------------------------------------------
+
+_INTERNAL_TLDS = (".internal", ".local", ".corp", ".intranet", ".lan")
+
+def _classify_webhook_url(url: str) -> str:
+    """Returns 'internal', 'invalid', or 'external'."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname or ""
+        port = parsed.port
+        if port and (port < 1 or port > 65535):
+            return "invalid"
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return "internal"
+            return "external"
+        except ValueError:
+            if host in ("localhost", "ip6-localhost"):
+                return "internal"
+            if any(host.endswith(tld) for tld in _INTERNAL_TLDS):
+                return "internal"
+            return "external"
+    except Exception:
+        return "invalid"
+
+
+# ---------------------------------------------------------------------------
+# v2 Auth Routes
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v2/auth/token")
+async def v2_auth_token(request: Request):
+    """v2 login — validates lure credential, provisions workspace, creates Redis session."""
+    src_ip = _extract_src_ip(request)
+    await _v2_check_rate_limit(src_ip)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = str(body.get("email") or body.get("username") or "").strip()[:256]
+    password = str(body.get("password") or "").strip()[:256]
+
+    # Timing normalisation — prevents differential timing leaks
+    await asyncio.sleep(random.uniform(0.6, 1.2))
+
+    # Bruteforce tracking — reuses same _auth_attempts/_auth_lock as api_auth()
+    now_ts = time.time()
+    with _auth_lock:
+        bucket = _auth_attempts[src_ip]
+        if password:
+            bucket.append((now_ts, password))
+        recent = [(ts, pw) for ts, pw in bucket if now_ts - ts <= _BF_WINDOW_SECS]
+        fail_count = len(recent)
+        recent_passwords = [pw for _, pw in recent[-5:]]
+
+    if fail_count >= _BF_THRESHOLD and (fail_count - 1) < _BF_THRESHOLD:
+        bf_event: dict[str, Any] = {
+            "event_id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "sensor": "api",
+            "event_type": "http.bruteforce.detected",
+            "src_ip": src_ip,
+            "src_port": request.client.port if request.client else None,
+            "dst_port": 8080,
+            "username": email or None,
+            "password": None,
+            "payload": json.dumps({
+                "fail_count": fail_count,
+                "window_secs": _BF_WINDOW_SECS,
+                "last_passwords_tried": recent_passwords,
+                "path": "/api/v2/auth/token",
+                "note": "bruteforce threshold reached — v2 auth",
+            }),
+            "raw_log": None,
+            "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+            **_lookup_geo(src_ip),
+        }
+        asyncio.create_task(_log_event_async(bf_event))
+        if HONEYDASH_URL and SENSOR_API_KEY:
+            asyncio.create_task(_push_honeydash_async(bf_event, "Bruteforce"))
+
+    # Credential validation
+    cred = LURE_CREDS_V2.get(email)
+    authed = False
+    if cred and _BCRYPT_AVAILABLE:
+        stored_ph: Optional[str] = None
+        try:
+            conn_tmp = psycopg2.connect(POSTGRES_DSN)
+            conn_tmp.autocommit = True
+            cur_tmp = conn_tmp.cursor()
+            cur_tmp.execute("SELECT password_hash FROM workspace_members WHERE email = %s", (email,))
+            row = cur_tmp.fetchone()
+            cur_tmp.close()
+            conn_tmp.close()
+            if row:
+                stored_ph = row[0]
+        except Exception:
+            pass
+        if stored_ph:
+            try:
+                loop = asyncio.get_event_loop()
+                authed = await loop.run_in_executor(None, _bcrypt_verify, password, stored_ph)
+            except Exception:
+                authed = False
+
+    if not authed:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid credentials. Use your VantaraHealth SSO credentials or contact support@cyveera.ai."},
+        )
+
+    # Provision per-attacker workspace
+    redis_client = _get_redis_async()
+    workspace_id = await _provision_workspace(src_ip, email, redis_client)
+
+    # Check if returning attacker
+    is_returning = False
+    try:
+        conn_chk = psycopg2.connect(POSTGRES_DSN)
+        conn_chk.autocommit = True
+        cur_chk = conn_chk.cursor()
+        cur_chk.execute("SELECT event_count FROM attacker_workspaces WHERE workspace_id = %s", (workspace_id,))
+        ec_row = cur_chk.fetchone()
+        cur_chk.close()
+        conn_chk.close()
+        if ec_row and ec_row[0] > 1:
+            is_returning = True
+    except Exception:
+        pass
+
+    if is_returning:
+        ret_event: dict[str, Any] = {
+            "event_id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "sensor": "api",
+            "event_type": "http.workspace.returning_attacker",
+            "src_ip": src_ip,
+            "src_port": request.client.port if request.client else None,
+            "dst_port": 8080,
+            "username": email,
+            "password": None,
+            "payload": json.dumps({"workspace_id": workspace_id, "email": email}),
+            "raw_log": None,
+            "session_id": request.cookies.get("nro_session") or str(uuid.uuid4()),
+            **_lookup_geo(src_ip),
+        }
+        asyncio.create_task(_log_event_async(ret_event))
+        if HONEYDASH_URL and SENSOR_API_KEY:
+            asyncio.create_task(_push_honeydash_async(ret_event, "Returning Attacker"))
+
+    # Build Redis session
+    session_id = str(uuid.uuid4())
+    csrf_token = _secrets.token_hex(16)
+    raw_ua = request.headers.get("user-agent", "")
+    session_data = {
+        "email": email,
+        "role": cred["role"],
+        "ip": src_ip.split("/")[0],
+        "user_agent_raw": raw_ua,
+        "workspace_id": workspace_id,
+        "csrf_token": csrf_token,
+        "last_active": time.time(),
+    }
+    await redis_client.set(f"session:v2:{session_id}", json.dumps(session_data), ex=1800)
+
+    # Populate _SESSION_USER_MAP for admin_page() personalisation (§4.1.1 BLOCKER-3)
+    with _SESSION_USER_LOCK:
+        _SESSION_USER_MAP[session_id] = email
+
+    # Role-based redirect
+    redirect_to = "/settings/admin" if cred["role"] == "cyveera_support" else "/dashboard"
+
+    resp = JSONResponse(status_code=200, content={
+        "token": session_id,
+        "role": cred["role"],
+        "redirect_to": redirect_to,
+        "workspace_id": workspace_id,
+        "expires_at": datetime.fromtimestamp(time.time() + 1800, tz=timezone.utc).isoformat(),
+    })
+    # DEV_MODE: React dev server (port 5173) is a different origin from FastAPI
+    # (port 8080).  Browsers block SameSite=Lax cookies on cross-origin requests
+    # with credentials: "include".  In dev we use SameSite=None; Secure=False.
+    # Production keeps SameSite=Lax (nginx same-origin proxy, no CORS dance needed).
+    resp.set_cookie(
+        key=_COOKIE_NAME_V2,
+        value=session_id,
+        path="/",
+        httponly=True,
+        secure=False,
+        samesite="none" if DEV_MODE else "lax",
+        max_age=1800,
+    )
+    # Signal middleware to override event_type → http.lure.credential.success
+    # Middleware strips this header before sending to client (same as api_auth())
+    resp.headers["X-Lure-Credential-Used"] = "true"
+    return resp
+
+
+_DEFAULT_DISPLAY_NAMES = {
+    "j.smith@vantarahealth.com": ("Jordan Smith", "j.smith"),
+    "alice.wong@merisol.io":     ("Alice Wong",   "a.wong"),
+    "support@cyveera.ai":        ("Cyveera Support", "support"),
+}
+
+
+@app.get("/api/v2/auth/me")
+async def v2_auth_me(request: Request):
+    """Return current user object.  Called by React AppLayout on mount."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    ua_parsed = _parse_user_agent(session.get("user_agent_raw", ""))
+    workspace_id = session.get("workspace_id", "vantarahealth")
+
+    # Read saved profile if attacker has updated it
+    defaults = _DEFAULT_DISPLAY_NAMES.get(session["email"], (session["email"], session["email"]))
+    full_name    = defaults[0]
+    display_name = defaults[1]
+    timezone     = "America/New_York"
+    language     = "English (US)"
+    try:
+        loop = asyncio.get_event_loop()
+        def _read_profile():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT full_name, display_name, timezone, language "
+                "FROM workspace_profiles WHERE workspace_id = %s",
+                (workspace_id,),
+            )
+            return cur.fetchone()
+        row = await loop.run_in_executor(None, _read_profile)
+        if row:
+            full_name, display_name, timezone, language = row
+    except Exception:
+        pass
+
+    return JSONResponse({
+        "email": session["email"],
+        "full_name": full_name,
+        "display_name": display_name,
+        "role": session["role"],
+        "ip": src_ip.split("/")[0],
+        "user_agent_parsed": ua_parsed,
+        "timezone": timezone,
+        "language": language,
+        "workspace": {"id": workspace_id, "name": "VantaraHealth", "plan": "Pro"},
+        "csrf_token": session.get("csrf_token", ""),
+    })
+
+
+@app.post("/api/v2/profile/update")
+async def v2_profile_update(request: Request):
+    """Persist profile changes permanently — full_name, display_name, timezone, language."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    defaults = _DEFAULT_DISPLAY_NAMES.get(session["email"], (session["email"], session["email"]))
+    full_name    = str(body.get("full_name")    or defaults[0])[:128]
+    display_name = str(body.get("display_name") or defaults[1])[:64]
+    tz_str       = str(body.get("timezone")     or "America/New_York")[:64]
+    language     = str(body.get("language")     or "English (US)")[:64]
+
+    try:
+        loop = asyncio.get_event_loop()
+        def _upsert():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO workspace_profiles
+                    (workspace_id, full_name, display_name, timezone, language, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (workspace_id) DO UPDATE SET
+                    full_name    = EXCLUDED.full_name,
+                    display_name = EXCLUDED.display_name,
+                    timezone     = EXCLUDED.timezone,
+                    language     = EXCLUDED.language,
+                    updated_at   = NOW()
+            """, (workspace_id, full_name, display_name, tz_str, language))
+            cur.close(); conn.close()
+        await loop.run_in_executor(None, _upsert)
+    except Exception as exc:
+        logger.warning("v2_profile_update_error", error=str(exc))
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.profile.update",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({
+            "full_name": full_name,
+            "display_name": display_name,
+            "timezone": tz_str,
+            "language": language,
+        }),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Profile Updated"))
+
+    return JSONResponse({"status": "saved", "display_name": display_name, "full_name": full_name, "timezone": tz_str, "language": language})
+
+
+@app.get("/api/v2/auth/logout")
+async def v2_auth_logout(request: Request):
+    """Clear v2 session from Redis and delete cookie.  Returns JSON (not 302) — SPA navigates."""
+    session_id = request.cookies.get(_COOKIE_NAME_V2)
+    if session_id:
+        try:
+            await _get_redis_async().delete(f"session:v2:{session_id}")
+        except Exception:
+            pass
+    resp = JSONResponse({"ok": True, "redirect_to": "/login"})
+    resp.delete_cookie(_COOKIE_NAME_V2)
+    return resp
+
+
+@app.post("/api/v2/auth/sso/initiate")
+async def v2_auth_sso_initiate(request: Request):
+    """SSO stub — plausible identity-provider latency, always returns 503."""
+    src_ip = _extract_src_ip(request)
+    await _v2_check_rate_limit(src_ip)
+    await asyncio.sleep(random.uniform(1.8, 2.4))
+    return JSONResponse(status_code=503, content={"error": "sso_unavailable",
+        "detail": "Identity provider timeout. Use local credentials."})
+
+
+# ---------------------------------------------------------------------------
+# v2 CRUD Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v2/runs")
+async def v2_get_runs(request: Request):
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT run_id, model_name, status, duration_min, gpu_hours, "
+                "started_by, started_at, error_log FROM training_runs "
+                "WHERE workspace_id = %s ORDER BY started_at DESC",
+                (workspace_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return rows
+        rows = await loop.run_in_executor(None, _fetch)
+        # Serialise non-JSON-native types and add frontend-friendly aliases.
+        # Frontend mock (runs.json) uses: id, model, status, duration, gpu, by, started.
+        for r in rows:
+            if r.get("started_at"):
+                r["started_at"] = r["started_at"].isoformat()
+                r["started"] = r["started_at"][:16].replace("T", " ")  # "YYYY-MM-DD HH:MM"
+            else:
+                r["started"] = "—"
+            if r.get("gpu_hours") is not None:
+                r["gpu_hours"] = float(r["gpu_hours"])
+                r["gpu"] = f"{r['gpu_hours']:.1f}h"
+            else:
+                r["gpu"] = "—"
+            dur = r.get("duration_min")
+            if dur is not None:
+                h, m = divmod(int(dur), 60)
+                r["duration"] = f"{h}h {m:02d}m"
+            else:
+                r["duration"] = "—"
+            # Scalar aliases
+            r["id"] = r.get("run_id", "")
+            r["model"] = r.get("model_name", "")
+            r["by"] = r.get("started_by", "")
+    except Exception as exc:
+        logger.warning("v2_get_runs_error", error=str(exc))
+        rows = []
+    return JSONResponse({"runs": rows, "total": len(rows)})
+
+
+@app.get("/api/v2/runs/{run_id}/checkpoint")
+async def v2_run_checkpoint_download(run_id: str, request: Request):
+    """
+    Lure checkpoint download. All run IDs return the same shared canary binary.
+    Filename is parameterised by safe_run_id so the attacker sees a run-specific file.
+
+    Tripwires embedded in _CHECKPOINT_V2_BIN:
+      1. DNS canarytoken URL — fires on hostname resolution by any HTTP lib or scanner
+      2. AWS key AKIAYZM57LXRGIYTCOUV — fires on any AWS API call
+      3. DB / SSH credentials — matches Cowrie userdb.txt for sentinel kill-chain correlation
+
+    Event flow (MF-1, MF-4 compliant — no handler-level log or HoneyDash push):
+      Middleware:  X-Lure-Data-Exfil: true → http.lure.data_exfil (sole event)
+      Middleware:  _push_honeydash_async(event, "Data Exfil") fires automatically
+      Callback:    POST /api/v1/canarytoken/callback → http.canarytoken.fired
+    """
+    await _v2_session_required(request)
+    # MF-3: sanitise attacker-controlled path segment before reflecting into Content-Disposition
+    safe_run_id = run_id if re.match(r"^[a-zA-Z0-9._-]{1,64}$", run_id) else "run-latest"
+    return Response(
+        content=_CHECKPOINT_V2_BIN,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="checkpoint-{safe_run_id}-latest.bin"',
+            "X-Lure-Data-Exfil": "true",
+        },
+    )
+
+
+@app.get("/api/v2/models")
+async def v2_get_models(request: Request):
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT model_name, version, customer, status, drift_score, last_check "
+                "FROM models WHERE workspace_id = %s ORDER BY model_name",
+                (workspace_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return rows
+        rows = await loop.run_in_executor(None, _fetch)
+        for r in rows:
+            if r.get("last_check"):
+                r["last_check"] = r["last_check"].isoformat()
+                r["lastCheck"] = r["last_check"][:16].replace("T", " ")
+            else:
+                r["lastCheck"] = ""
+            if r.get("drift_score") is not None:
+                r["drift_score"] = float(r["drift_score"])
+                r["drift"] = r["drift_score"]   # frontend reads m.drift
+            else:
+                r["drift"] = 0.0
+            # Frontend reads m.name (not m.model_name)
+            r["name"] = r.get("model_name", "")
+    except Exception as exc:
+        logger.warning("v2_get_models_error", error=str(exc))
+        rows = []
+    return JSONResponse({"models": rows, "total": len(rows)})
+
+
+@app.get("/api/v2/models/{model_id}/drift")
+async def v2_get_model_drift(model_id: str, request: Request):
+    """30-day synthetic drift timeseries for a named model."""
+    await _v2_session_required(request)
+    import datetime as _dt
+    base_score = {"vantara-risk-v3": 0.04, "merisol-nlp-v2": 0.31,
+                  "quelaris-embed-001": 0.07, "ardentix-llm-ft": 0.18, "lumira-clf-v4": 0.02}.get(model_id, 0.10)
+    points = []
+    for i in range(30):
+        ts = (_dt.datetime.utcnow() - _dt.timedelta(days=29 - i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        drift = round(max(0.0, min(1.0, base_score + random.uniform(-0.02, 0.02))), 4)
+        points.append({"ts": ts, "drift_score": drift})
+    return JSONResponse({"model_id": model_id, "window_hours": 720, "data_points": points})
+
+
+@app.get("/api/v2/datasets")
+async def v2_get_datasets(request: Request):
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT name, source, format, row_count, size_display, uploaded_at, tags "
+                "FROM datasets WHERE workspace_id = %s ORDER BY uploaded_at DESC",
+                (workspace_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return rows
+        rows = await loop.run_in_executor(None, _fetch)
+        for r in rows:
+            if r.get("uploaded_at"):
+                r["uploaded_at"] = str(r["uploaded_at"])
+    except Exception as exc:
+        logger.warning("v2_get_datasets_error", error=str(exc))
+        rows = []
+    return JSONResponse({"datasets": rows, "total": len(rows)})
+
+
+@app.get("/api/v2/notifications")
+async def v2_get_notifications(request: Request):
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT id, severity, title, body, created_at, is_read "
+                "FROM notifications WHERE workspace_id = %s ORDER BY created_at DESC",
+                (workspace_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return rows
+        rows = await loop.run_in_executor(None, _fetch)
+        for r in rows:
+            if r.get("created_at"):
+                r["created_at"] = r["created_at"].isoformat()
+    except Exception as exc:
+        logger.warning("v2_get_notifications_error", error=str(exc))
+        rows = []
+    return JSONResponse({"notifications": rows, "total": len(rows)})
+
+
+@app.patch("/api/v2/notifications/read-all")
+async def v2_notifications_read_all(request: Request):
+    """Mark every unread notification as read for this workspace."""
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    loop = asyncio.get_event_loop()
+    def _update():
+        conn = psycopg2.connect(POSTGRES_DSN)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE notifications SET is_read = true WHERE workspace_id = %s AND is_read = false",
+            (workspace_id,),
+        )
+        cur.close(); conn.close()
+    await loop.run_in_executor(None, _update)
+    return JSONResponse({"ok": True})
+
+
+@app.patch("/api/v2/notifications/{notif_id}/read")
+async def v2_notification_mark_read(notif_id: int, request: Request):
+    """Mark a single notification as read (dismiss)."""
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    loop = asyncio.get_event_loop()
+    def _update():
+        conn = psycopg2.connect(POSTGRES_DSN)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE notifications SET is_read = true WHERE id = %s AND workspace_id = %s",
+            (notif_id, workspace_id),
+        )
+        cur.close(); conn.close()
+    await loop.run_in_executor(None, _update)
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/v2/notifications")
+async def v2_notifications_clear_history(request: Request):
+    """Delete all read notifications (clear history) for this workspace."""
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    loop = asyncio.get_event_loop()
+    def _delete():
+        conn = psycopg2.connect(POSTGRES_DSN)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM notifications WHERE workspace_id = %s AND is_read = true",
+            (workspace_id,),
+        )
+        cur.close(); conn.close()
+    await loop.run_in_executor(None, _delete)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/v2/team")
+async def v2_get_team(request: Request):
+    """Returns workspace_members — shared across all workspaces (credentials not per-workspace)."""
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT email, display_name, role, last_active "
+                "FROM workspace_members WHERE workspace_id = %s ORDER BY id",
+                (workspace_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return rows
+        rows = await loop.run_in_executor(None, _fetch)
+        for r in rows:
+            if r.get("last_active"):
+                r["last_active"] = r["last_active"].isoformat()
+            # Frontend reads m.name / m.lastActive (matches data.json mock shape)
+            r["name"] = r.get("display_name", r.get("email", ""))
+            r["lastActive"] = r.get("last_active", "")
+    except Exception as exc:
+        logger.warning("v2_get_team_error", error=str(exc))
+        rows = []
+    return JSONResponse({"members": rows, "total": len(rows)})
+
+
+@app.get("/api/v2/api-keys")
+async def v2_get_api_keys(request: Request):
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT id, name, key_prefix, key_masked, key_full, scope, created_at, last_used_at "
+                "FROM api_keys WHERE workspace_id = %s ORDER BY created_at DESC",
+                (workspace_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return rows
+        rows = await loop.run_in_executor(None, _fetch)
+        for r in rows:
+            if r.get("created_at"):
+                r["created_at"] = str(r["created_at"])
+            if r.get("last_used_at"):
+                r["last_used_at"] = str(r["last_used_at"])
+            # Frontend reads k.masked / k.full / k.created / k.lastUsed
+            # (matches data.json mock field names).  Keep the canonical names
+            # alongside so the create-response and DB columns stay consistent.
+            r["masked"] = r.get("key_masked", "")
+            r["full"] = r.get("key_full", "")
+            r["created"] = r.get("created_at", "")
+            r["lastUsed"] = r.get("last_used_at", "")
+    except Exception as exc:
+        logger.warning("v2_get_api_keys_error", error=str(exc))
+        rows = []
+    return JSONResponse({"apiKeys": rows, "total": len(rows)})
+
+
+@app.post("/api/v2/api-keys")
+async def v2_create_api_key(request: Request):
+    """Honeytoken key creation — generates a fresh key, writes to DB, returns key_full."""
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = str(body.get("name") or "Unnamed key")[:128]
+    raw_scope = str(body.get("scope") or "read:all")
+    scope = raw_scope if raw_scope in VALID_API_KEY_SCOPES else "read:all"
+
+    await asyncio.sleep(random.uniform(0.6, 1.2))
+
+    key_full, key_prefix, key_masked = _generate_api_key()
+
+    new_id = None
+    today_str = datetime.now(timezone.utc).date().isoformat()
+    try:
+        loop = asyncio.get_event_loop()
+        def _write():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            # Bounded to 25 rows — delete oldest if exceeded
+            cur.execute("SELECT COUNT(*) FROM api_keys WHERE workspace_id = %s", (workspace_id,))
+            cnt = cur.fetchone()[0]
+            if cnt >= 25:
+                cur.execute(
+                    "DELETE FROM api_keys WHERE id = ("
+                    "  SELECT id FROM api_keys WHERE workspace_id = %s ORDER BY created_at ASC LIMIT 1"
+                    ")", (workspace_id,),
+                )
+            cur.execute(
+                "INSERT INTO api_keys (workspace_id, name, key_prefix, key_masked, key_full, scope, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (workspace_id, name, key_prefix, key_masked, key_full, scope, today_str),
+            )
+            row = cur.fetchone()
+            nid = row[0] if row else None
+            cur.close(); conn.close()
+            return nid
+        new_id = await loop.run_in_executor(None, _write)
+    except Exception as exc:
+        logger.warning("v2_create_api_key_db_error", error=str(exc))
+
+    with _HONEYTOKEN_LOCK:
+        _CREATED_HONEYTOKENS.add(key_full)
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.api_keys.create_attempted",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"key_name": name, "scope": scope, "workspace_id": workspace_id}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "API Key Created"))
+
+    return JSONResponse({"status": "created", "key": {
+        "id": new_id,
+        "name": name,
+        "key_prefix": key_prefix,
+        "key_masked": key_masked,
+        "key_full": key_full,
+        "scope": scope,
+        "created_at": today_str,
+        "last_used_at": None,
+    }})
+
+
+# ---------------------------------------------------------------------------
+# v2 Telemetry Route
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v2/telemetry")
+async def v2_telemetry(request: Request):
+    """Accept any JSON beacon from useTelemetry hook.  No auth required."""
+    src_ip = _extract_src_ip(request)
+    try:
+        body_bytes = await request.body()
+        body_json = json.loads(body_bytes) if body_bytes else {}
+    except Exception:
+        body_json = {}
+    event_name = str(body_json.get("event") or "unknown")[:64]
+    asyncio.create_task(_log_event_async({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": f"http.telemetry.{event_name}",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps(body_json),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }))
+    return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# v2 Trap Routes — SSRF, RCE, LFI, Crown Jewel, and others
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v2/data/import")
+async def v2_data_import(request: Request):
+    """SSRF trap — dataset import from URL.  Never makes outbound request."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    url = str(body.get("url") or "")[:512]
+    dataset_name = str(body.get("dataset_name") or "")[:128]
+    fmt = str(body.get("format") or "auto")[:32]
+
+    await asyncio.sleep(random.uniform(0.6, 1.2))
+
+    is_ssrf = any(pat.lower() in url.lower() for pat in _SSRF_PATTERNS + list(_REMOTE_IMPORT_SSRF_INDICATORS))
+
+    event_type = "http.snare.ssrf_attempt" if is_ssrf else "http.probe.remote_import"
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": event_type,
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"ssrf_url": url, "dataset_name": dataset_name, "format": fmt,
+                               "ssrf_detected": is_ssrf}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    if is_ssrf and HONEYDASH_URL and SENSOR_API_KEY:
+        asyncio.create_task(_push_honeydash_async(ev, "SSRF Attempt"))
+
+    job_id = f"dset-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:3]}"
+    ds_id = "ds_" + _secrets.token_hex(4)
+    ds_name = dataset_name or f"import-{job_id}"
+
+    # Persist imported dataset to attacker's workspace so it appears in GET /api/v2/datasets
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _persist_ds():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO datasets (workspace_id, name, source, format, row_count, size_display, uploaded_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, NOW()) ON CONFLICT (workspace_id, name) DO NOTHING",
+                (workspace_id, ds_name, url[:256], fmt, None, "unknown"),
+            )
+            cur.close(); conn.close()
+        await loop.run_in_executor(None, _persist_ds)
+    except Exception as exc:
+        logger.warning("v2_data_import_persist_error", error=str(exc))
+
+    return JSONResponse({
+        "status": "ingestion_queued",
+        "job_id": job_id,
+        "dataset_id": ds_id,
+        "estimated_completion": 45,
+        "source": url,
+        "format": fmt,
+        "dataset_name": ds_name,
+    })
+
+
+@app.post("/api/v2/training/jobs")
+async def v2_training_jobs(request: Request):
+    """Job submission — RCE intent trap via startup_script field."""
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    # Accept both "name" (frontend form field) and "job_name" (internal/API clients)
+    job_name = str(body.get("job_name") or body.get("name") or f"job-{uuid.uuid4().hex[:6]}")[:128]
+    # Accept both "model_name" (frontend select) and "base_model" (API clients)
+    base_model = str(body.get("base_model") or body.get("model_name") or "vantara-risk-v3")[:128]
+    # Accept both "gpu_allocation" (internal) and "dataset" (frontend may send this)
+    gpu_alloc = str(body.get("gpu_allocation") or "1x A100")[:64]
+    startup_script = str(body.get("startup_script") or "")[:4096]
+    description = str(body.get("description") or "")[:512]
+
+    # Detect shell metacharacters
+    _METACHAR_RE = re.compile(r'[$`|&;]|\$\(')
+    has_metachar = bool(_METACHAR_RE.search(startup_script))
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.snare.script_upload" if has_metachar else "http.training.job_submitted",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({
+            "startup_script": startup_script[:512],
+            "job_name": job_name,
+            "base_model": base_model,
+        }),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "RCE Attempt" if has_metachar else "Training Job"))
+
+    # Insert into training_runs — all submissions get a DB row
+    run_id = f"run-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{random.randint(1, 999):03d}"
+    error_log_val = (
+        "Worker process exited with code 1 (OOMKilled). Scheduler was unable to collect logs "
+        "before container teardown. Check cluster resource utilization on the management plane "
+        "or re-submit with a smaller batch size."
+        if has_metachar else None
+    )
+    status_val = "Failed" if has_metachar else "Queued"
+    try:
+        loop = asyncio.get_event_loop()
+        def _insert():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO training_runs "
+                "(workspace_id, run_id, model_name, status, started_by, started_at, error_log) "
+                "VALUES (%s, %s, %s, %s, %s, NOW(), %s) "
+                "ON CONFLICT (workspace_id, run_id) DO NOTHING",
+                (workspace_id, run_id, base_model, status_val,
+                 session.get("email", "unknown"), error_log_val),
+            )
+            cur.close(); conn.close()
+        await loop.run_in_executor(None, _insert)
+    except Exception as exc:
+        logger.warning("v2_training_jobs_insert_error", error=str(exc))
+
+    estimated_start = datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+    return JSONResponse({
+        "job_id": run_id,
+        "status": "queued",
+        "estimated_start": estimated_start,
+    })
+
+
+@app.get("/api/v2/artifacts")
+async def v2_get_artifacts_list(request: Request):
+    """Artifact directory listing — LFI browse entry point.  Returns static file list."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    browse_path = str(request.query_params.get("path") or "")[:256]
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.get.artifacts",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"browse_path": browse_path}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    return JSONResponse([
+        {"name": "vantara-risk-v3-epoch-48.bin",  "size": "2.1 GB",  "modified": "2026-06-07T14:22:00Z", "type": "binary"},
+        {"name": "config.yaml",                   "size": "4.2 KB",  "modified": "2026-06-07T09:15:00Z", "type": "config"},
+        {"name": "eval_metrics.json",             "size": "18.4 KB", "modified": "2026-06-07T14:23:00Z", "type": "json"},
+    ])
+
+
+@app.get("/api/v2/artifacts/download")
+async def v2_artifacts_download(request: Request):
+    """LFI / canary tarball download.  Returns lure tarball for the magic path; stub otherwise."""
+    session = await _v2_session_required(request)
+    artifact_path = str(request.query_params.get("artifact_path") or "")[:512]
+
+    _CANARY_PATH = "../../exports/workspace-backup-2025-11.tar.gz"
+    is_canary = artifact_path == _CANARY_PATH
+
+    if is_canary:
+        content_bytes = _BACKUP_TARBALL_BYTES
+        mime = "application/gzip"
+        filename = "workspace-backup-2025-11.tar.gz"
+    else:
+        basename = artifact_path.split("/")[-1] or "artifact.bin"
+        if basename.endswith(".json"):
+            content_bytes = b'{"placeholder": true}\n'
+            mime = "application/json"
+        elif basename.endswith((".yaml", ".yml")):
+            content_bytes = b"# placeholder\nversion: 1\n"
+            mime = "text/yaml"
+        else:
+            content_bytes = b"\x00" * 512
+            mime = "application/octet-stream"
+        filename = basename
+
+    resp = Response(
+        content=content_bytes,
+        media_type=mime,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Lure-Data-Exfil": "true",
+        },
+    )
+    return resp
+
+
+@app.get("/api/v2/internal/config")
+async def v2_internal_config(request: Request):
+    """Crown jewel — requires cyveera_support role + X-Internal-Access header."""
+    src_ip = _extract_src_ip(request)
+    # Log unconditionally — all hits are noteworthy regardless of auth outcome
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.snare.internal_config_access",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": request.cookies.get(_COOKIE_NAME_V2),
+        "password": None,
+        "payload": json.dumps({"path": "/api/v2/internal/config",
+                               "x_internal_access": request.headers.get("X-Internal-Access", "")}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+    # Session gate
+    session = await _v2_require_support(request)
+    # Header gate
+    if request.headers.get("X-Internal-Access") != "true":
+        return JSONResponse(status_code=403, content={
+            "error": "missing_header",
+            "message": "X-Internal-Access header required",
+        })
+    await _jitter()
+    return JSONResponse({
+        "db_host": "10.31.4.22",
+        "db_port": 5432,
+        "db_name": "neuro_prod",
+        "db_user": "neuro_app",
+        "s3_bucket": "cyvera-ml-artifacts",
+        "redis_url": "redis://10.31.4.22:6379",
+        "jwt_secret": "REDACTED",
+        "support_credentials": "REDACTED — see /run/secrets/support_creds",
+    })
+
+
+@app.post("/api/v2/integrations/webhook/test")
+async def v2_webhook_test(request: Request):
+    """SSRF trap — dynamic responses based on URL classification."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    url = str(body.get("url") or "")[:512]
+
+    await asyncio.sleep(random.uniform(0.6, 1.2))
+
+    classification = _classify_webhook_url(url)
+    is_ssrf = classification == "internal" or any(
+        pat.lower() in url.lower() for pat in _SSRF_PATTERNS
+    )
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.snare.ssrf_attempt" if is_ssrf else "http.webhook.test",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"webhook_url": url, "classification": classification,
+                               "ssrf_detected": is_ssrf}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    if HONEYDASH_URL and SENSOR_API_KEY:
+        asyncio.create_task(_push_honeydash_async(ev, "SSRF Attempt" if is_ssrf else "Webhook Test"))
+
+    if classification == "internal":
+        return JSONResponse(status_code=502, content={
+            "status": "failed",
+            "error": "connection_refused",
+            "relay_node": "10.31.4.22",
+        })
+    if classification == "invalid":
+        return JSONResponse(status_code=504, content={
+            "status": "failed",
+            "error": "timeout",
+            "relay_node": "10.31.4.22",
+        })
+    # external
+    return JSONResponse(status_code=200, content={
+        "status": "delivered",
+        "http_status": 200,
+        "latency_ms": random.randint(140, 230),
+        "relay": "http://10.31.4.22:3128/",
+    })
+
+
+@app.post("/api/v2/team/invite")
+async def v2_team_invite(request: Request):
+    """Intent capture — logs submitted invite email."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    invite_email = str(body.get("email") or "")[:256]
+    role = str(body.get("role") or "Member")[:64]
+
+    await asyncio.sleep(random.uniform(0.6, 1.2))
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.team.invite_submitted",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"invite_email": invite_email, "role": role,
+                               "workspace_id": session.get("workspace_id")}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Team Invite"))
+    # Persist invited member to workspace so they appear in GET /api/v2/team
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    if invite_email:
+        try:
+            loop = asyncio.get_event_loop()
+            def _persist_member():
+                conn = psycopg2.connect(POSTGRES_DSN)
+                conn.autocommit = True
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO workspace_members (workspace_id, email, display_name, role) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT (email) DO NOTHING",
+                    (workspace_id, invite_email, invite_email.split("@")[0], role),
+                )
+                cur.close(); conn.close()
+            await loop.run_in_executor(None, _persist_member)
+        except Exception as exc:
+            logger.warning("v2_team_invite_persist_error", error=str(exc))
+
+    return JSONResponse({"status": "invited", "email": invite_email})
+
+
+@app.post("/api/v2/team/remove")
+async def v2_team_remove(request: Request):
+    """Intent capture — blocks removal of support@cyveera.ai."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    target_email = str(body.get("email") or "")[:256]
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.team.remove_attempted",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"target_email": target_email}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Team Member Removed"))
+
+    if target_email == "support@cyveera.ai":
+        return JSONResponse(status_code=403, content={
+            "error": "forbidden",
+            "message": "You cannot remove Cyveera support accounts.",
+        })
+    return JSONResponse({"status": "removed"})
+
+
+@app.get("/api/v2/profile/ssh-keys")
+async def v2_profile_ssh_keys_get(request: Request):
+    """Return saved SSH keys for this workspace."""
+    session = await _v2_session_required(request)
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _read():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT name, fingerprint, added_at, last_used_at "
+                "FROM workspace_ssh_keys WHERE workspace_id = %s ORDER BY id ASC",
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+            cur.close(); conn.close()
+            return rows
+        rows = await loop.run_in_executor(None, _read)
+    except Exception:
+        rows = []
+    keys = [
+        {"name": r[0], "fingerprint": r[1],
+         "added_at": str(r[2]) if r[2] else None,
+         "last_used_at": str(r[3]) if r[3] else None}
+        for r in rows
+    ]
+    return JSONResponse({"keys": keys})
+
+
+@app.post("/api/v2/profile/ssh-keys")
+async def v2_profile_ssh_keys(request: Request):
+    """SSH public key capture — validates format before logging."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = str(body.get("name") or "")[:128]
+    key = str(body.get("key") or "").strip()[:8192]
+
+    if not _SSH_KEY_RE.match(key):
+        _log_event({
+            "event_id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "sensor": "api",
+            "event_type": "http.snare.ssh_key_invalid_format",
+            "src_ip": src_ip,
+            "src_port": request.client.port if request.client else None,
+            "dst_port": 8080,
+            "username": session.get("email"),
+            "password": None,
+            "payload": json.dumps({"key_preview": key[:80], "name": name}),
+            "raw_log": None,
+            "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+            **_lookup_geo(src_ip),
+        })
+        raise HTTPException(status_code=400, detail={
+            "error": "invalid_format",
+            "message": "Invalid SSH public key format. Supported types: ssh-rsa, ssh-ed25519, ssh-ecdsa.",
+        })
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.snare.ssh_key_submitted",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"key": key, "name": name}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "SSH Key Submitted"))
+
+    # Derive a fake fingerprint from the key content
+    import hashlib as _hl
+    fp_hex = _hl.sha256(key.encode()).hexdigest()
+    fingerprint = f"SHA256:{fp_hex[:4].upper()}...{fp_hex[-4:].upper()}"
+
+    # Persist permanently so returning attacker sees their key
+    workspace_id = session.get("workspace_id", "vantarahealth")
+    try:
+        loop = asyncio.get_event_loop()
+        def _persist():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO workspace_ssh_keys (workspace_id, name, key_full, fingerprint, added_at) "
+                "VALUES (%s, %s, %s, %s, CURRENT_DATE)",
+                (workspace_id, name or "unnamed key", key, fingerprint),
+            )
+            cur.close(); conn.close()
+        await loop.run_in_executor(None, _persist)
+    except Exception as exc:
+        logger.warning("v2_ssh_key_persist_error", error=str(exc))
+
+    return JSONResponse({
+        "status": "key_added",
+        "name": name or "unnamed key",
+        "fingerprint": fingerprint,
+        "added_at": datetime.now(timezone.utc).date().isoformat(),
+        "message": "SSH key added. It may take up to 60 seconds to propagate to all cluster nodes.",
+    })
+
+
+@app.get("/api/v2/settings/billing/invoice/{invoice_id}")
+async def v2_billing_invoice(invoice_id: str, request: Request):
+    """Canary PDF download — emits http.lure.data_exfil."""
+    await _v2_session_required(request)
+    # Normalise invoice_id — only INV-2026-001 through INV-2026-006 are valid display names
+    safe_id = invoice_id if re.match(r"^INV-\d{4}-\d{3}$", invoice_id) else "INV-2026-001"
+    resp = Response(
+        content=_INVOICE_PDF_BYTES,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="invoice-{safe_id}.pdf"',
+            "X-Lure-Data-Exfil": "true",
+        },
+    )
+    return resp
+
+
+@app.post("/api/v2/security/mfa/toggle")
+async def v2_security_mfa_toggle(request: Request):
+    """MFA disable trap — bcrypt-validates submitted password before logging."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    submitted_password = str(body.get("password") or "")[:256]
+    email = session.get("email", "")
+
+    # Step 1: retrieve stored hash
+    stored_ph: Optional[str] = None
+    try:
+        loop = asyncio.get_event_loop()
+        def _get_hash():
+            conn = psycopg2.connect(POSTGRES_DSN)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute("SELECT password_hash FROM workspace_members WHERE email = %s", (email,))
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            return row[0] if row else None
+        stored_ph = await loop.run_in_executor(None, _get_hash)
+    except Exception:
+        pass
+
+    # Step 2: bcrypt verify in executor
+    verified = False
+    if stored_ph and _BCRYPT_AVAILABLE and submitted_password:
+        try:
+            loop = asyncio.get_event_loop()
+            verified = await loop.run_in_executor(None, _bcrypt_verify, submitted_password, stored_ph)
+        except Exception:
+            verified = False
+
+    # Log all attempts — wrong passwords reveal attacker's guesses; correct = crown jewel
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.snare.mfa_enable_attempt",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": email,
+        "password": submitted_password,
+        "payload": json.dumps({
+            "attempted_password": submitted_password,
+            "password_correct": verified,
+        }),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    if HONEYDASH_URL and SENSOR_API_KEY:
+        asyncio.create_task(_push_honeydash_async(ev, "MFA Enable Attempt"))
+
+    if not verified:
+        return JSONResponse(status_code=401, content={"error": "invalid_password"})
+
+    return JSONResponse(status_code=403, content={
+        "error": "mfa_enable_failed",
+        "message": "Unable to enable MFA at this time. Your account may require administrator approval. Contact support@cyveera.ai for assistance.",
+    })
+
+
+@app.post("/api/v2/security/session/revoke")
+async def v2_security_session_revoke(request: Request):
+    """Session revocation — logs session_ref; self-revoke logs out the attacker."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    submitted_sid = str(body.get("session_id") or "")[:128]
+
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.security.session_revoke",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"submitted_session_id": submitted_sid}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+
+    current_sid = request.cookies.get(_COOKIE_NAME_V2, "")
+    is_self_revoke = submitted_sid in ("current", current_sid) and current_sid
+    if is_self_revoke:
+        try:
+            await _get_redis_async().delete(f"session:v2:{current_sid}")
+        except Exception:
+            pass
+        resp = JSONResponse({"status": "revoked", "self": True})
+        resp.delete_cookie(_COOKIE_NAME_V2)
+        return resp
+
+    return JSONResponse({"status": "revoked", "self": False})
+
+
+@app.get("/api/v2/security/allowlist")
+async def v2_security_allowlist_get(request: Request):
+    """Return current allowlist state for this session."""
+    session = await _v2_session_required(request)
+    entries  = session.get("allowlist_entries", _ALLOWLIST_DEFAULTS)
+    enabled  = session.get("allowlist_enabled", False)
+    return JSONResponse({"enabled": enabled, "entries": entries})
+
+
+@app.post("/api/v2/security/allowlist/add")
+async def v2_security_allowlist_add(request: Request):
+    """CIDR submission — captures attacker network intelligence."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    cidr = str(body.get("cidr") or "")[:64]
+    description = str(body.get("description") or "")[:256]
+
+    await asyncio.sleep(random.uniform(0.6, 1.2))
+
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.snare.allowlist_probe",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"submitted_cidr": cidr, "description": description}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+
+    # Persist new entry into this session so it survives page navigation
+    current_entries = session.get("allowlist_entries", list(_ALLOWLIST_DEFAULTS))
+    current_entries.append({"cidr": cidr or "0.0.0.0/32",
+                             "description": description or "—",
+                             "active": True})
+    await _v2_session_patch(request, {"allowlist_entries": current_entries})
+
+    return JSONResponse({"status": "queued",
+        "message": "CIDR block successfully added to network perimeter routing."})
+
+
+@app.post("/api/v2/security/allowlist/toggle")
+async def v2_security_allowlist_toggle(request: Request):
+    """IP Access Control toggle — high-severity: attacker attempting perimeter lockdown."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    enabled = bool(body.get("enabled", False))
+
+    await asyncio.sleep(random.uniform(0.8, 1.6))
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.security.allowlist_toggle",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"enabled": enabled, "severity": "HIGH",
+                                "note": "attacker attempting perimeter lockdown"}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Perimeter Lockdown Attempt"))
+
+    # Persist toggle state into session so it survives page navigation
+    await _v2_session_patch(request, {"allowlist_enabled": enabled})
+
+    action = "enabled" if enabled else "disabled"
+    return JSONResponse({
+        "status": "applied",
+        "message": f"IP Access Control {action}. Network access control lists successfully applied globally.",
+    })
+
+
+@app.post("/api/v2/security/keys/rotate")
+async def v2_security_keys_rotate(request: Request):
+    """Key rotation event — logs intent."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.security.keys_rotate",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"action": "rotate_all_keys"}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Key Rotation"))
+    return JSONResponse({
+        "status": "rotation_queued",
+        "affected_keys": 3,
+        "note": "Update your CI/CD pipelines and automation scripts. New keys will be issued at the /api-keys page within 5 minutes.",
+    })
+
+
+@app.post("/api/v2/api-keys/revoke")
+async def v2_api_keys_revoke(request: Request):
+    """API key revocation intent capture."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    key_id = body.get("key_id")
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.api_keys.revoke_attempted",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"key_id": key_id}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "API Key Revoked"))
+    return JSONResponse({"status": "revoked"})
+
+
+@app.post("/api/v2/admin/tenant/{action}")
+async def v2_admin_tenant_action(action: str, request: Request):
+    """Admin action trap — cyveera_support only; returns ComplianceLock JSON."""
+    session = await _v2_require_support(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.snare.admin_action_attempted",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"action": action, "body": body}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "Admin Action"))
+    return JSONResponse(status_code=403, content={
+        "error": "action_blocked",
+        "message": "This action requires SOC 2 compliance mode authorization. See INC-2026-047.",
+        "requires": "dual_approval",
+        "incident_ref": "INC-2026-047",
+    })
+
+
+@app.post("/api/v2/mfa/verify")
+async def v2_mfa_verify(request: Request):
+    """MFA bypass attempt — always returns verified=true after realistic delay."""
+    session = await _v2_session_required(request)
+    src_ip = _extract_src_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    code = str(body.get("code") or "")[:32]
+
+    await asyncio.sleep(0.4)  # simulate bcrypt verification timing
+
+    ev = {
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.mfa.bypass_attempt",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": session.get("email"),
+        "password": None,
+        "payload": json.dumps({"code": code}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    }
+    _log_event(ev)
+    asyncio.create_task(_push_honeydash_async(ev, "MFA Bypass Attempt"))
+    return JSONResponse({"verified": True})
+
+
+# ---------------------------------------------------------------------------
+# Legacy debug trap (v1 path — outside /api/v2/ block, intentionally unauthenticated)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/debug/cluster-status")
+async def v1_legacy_debug(request: Request):
+    """Legacy shadow trap — 410 Gone; funnels API enumerators toward /docs."""
+    src_ip = _extract_src_ip(request)
+    _log_event({
+        "event_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc),
+        "sensor": "api",
+        "event_type": "http.snare.legacy_api_exploit",
+        "src_ip": src_ip,
+        "src_port": request.client.port if request.client else None,
+        "dst_port": 8080,
+        "username": None,
+        "password": None,
+        "payload": json.dumps({"path": "/api/v1/debug/cluster-status"}),
+        "raw_log": None,
+        "session_id": request.cookies.get(_COOKIE_NAME_V2) or str(uuid.uuid4()),
+        **_lookup_geo(src_ip),
+    })
+    return JSONResponse(status_code=410, content={
+        "error": "endpoint_removed",
+        "message": "This endpoint was deprecated in API v1.8 and removed in v2.0. See the v2 migration guide at /docs/api-reference/advanced/node-management for the replacement endpoint.",
+        "migration_ref": "v2-migration-2026-03",
+    })
+
+
+# ---------------------------------------------------------------------------
+# v2 Discovery / Utility Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v2/cluster/nodes")
+async def v2_cluster_nodes(request: Request):
+    """Alias of /api/v1/cluster/nodes — ssh_host set to public domain for kill chain."""
+    await _jitter()
+    return JSONResponse({
+        "cluster": "neuro-train-cluster",
+        "updated_at": "2026-06-07T08:00:00Z",
+        "nodes": [
+            {
+                "name": "neuro-train-01",
+                "ip": "10.31.4.22",
+                "ssh_host": "neuro.cyveera.com",
+                "status": "running",
+                "ssh_port": 22,
+                "ssh_fingerprint": "SHA256:k3YxPq9mRvN4wZj2sBtL7uCeIoAhGfDy",
+                "gpu_util": 87.4,
+                "role": "primary",
+                "note": "Direct SSH requires neuro-svc credentials. See /config.yaml.",
+            },
+            {
+                "name": "neuro-train-02",
+                "ip": "10.31.4.23",
+                "ssh_host": "neuro.cyveera.com",
+                "status": "idle",
+                "ssh_port": 22,
+                "ssh_fingerprint": "SHA256:m5VwRq3nKt8pXd1yBzNjLaFeHiSgCuOe",
+                "gpu_util": 0.0,
+                "role": "standby",
+            },
+        ],
+    })
+
+
+# ===========================================================================
+# End of API v2 block
+# ===========================================================================
 
 
 # ---------------------------------------------------------------------------

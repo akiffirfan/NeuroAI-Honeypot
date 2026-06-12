@@ -53,6 +53,7 @@ _HTTP_TIER_COOLDOWN = {
     "http.always_alert": 0,
     "http.sensitive":    _SENSITIVE_COOLDOWN_SECS,
     "http.routine":      _ROUTINE_COOLDOWN_SECS,
+    "web.webhook":       _SENSITIVE_COOLDOWN_SECS,   # external webhook test — 5-min cooldown
 }
 
 logging.basicConfig(
@@ -110,6 +111,8 @@ _NO_COOLDOWN_EVENTS = {
     "smb.ntlmv2.hash",                  # NTLMv2 hash capture — highest-value SMB event, always alert
     "http.telemetry.devtools_opened",   # human attacker: F12/side-panel — always alert
     "http.unauth.sensitive_access",    # direct hit on /admin /api-keys /jobs-new without session — always alert
+    "http.snare.mfa_enable_attempt",   # password submitted to enable MFA — always alert (captures credential)
+    "http.security.allowlist_toggle",  # attacker attempting perimeter lockdown — always alert
 }
 
 
@@ -143,6 +146,18 @@ def _build_reason(event_type: str, row: dict, payload: dict) -> str:
         return f"Unauthenticated access — {path or url} — no session (recon or credential skip attempt)"
     if event_type == "http.snare.ssrf_attempt":
         return f"SSRF Attempt — target URL: {ssrf_url[:100] or path}"
+    if event_type == "http.webhook.test":
+        wh_url = payload.get("webhook_url") or ""
+        return f"External webhook test — possible C2 URL: {wh_url[:100] or '(no url)'}"
+    if event_type in ("http.snare.mfa_enable_attempt", "http.snare.mfa_disable_attempt"):
+        correct = payload.get("password_correct", False)
+        pw = payload.get("attempted_password") or ""
+        status = "CORRECT PASSWORD" if correct else "wrong password"
+        return f"MFA enable attempt — {status} — submitted: '{pw[:60]}'"
+    if event_type == "http.security.allowlist_toggle":
+        enabled = payload.get("enabled", False)
+        action = "ENABLED (perimeter lockdown)" if enabled else "disabled"
+        return f"IP Access Control toggle — {action} — attacker locking down perimeter"
     if event_type == "http.prompt.injection":
         pattern = payload.get("pattern") or ""
         preview = payload.get("body_preview") or ""
@@ -329,10 +344,15 @@ def _should_alert(row: dict) -> tuple:
         "smb.file.write":     "smb.file",     # collapses with smb.file.read per IP
         # Webhook test — give it its own bucket so it can't suppress/be-suppressed by generic http
         "http.post.api.v1.integrations.webhook.test": "web.webhook",
+        "http.webhook.test":                          "web.webhook",   # external C2 URL test
+        "http.snare.mfa_enable_attempt":              "web.mfa",       # password submitted to enable MFA
+        "http.snare.mfa_disable_attempt":             "web.mfa",
         # Security page actions — all share one per-IP bucket so repeated probing fires one alert
         "security.mfa_toggle_attempt":     "web.security",
         "security.session_revoke_attempt": "web.security",
-        "security.allowlist_probe":        "web.security",
+        "security.allowlist_probe":          "web.security",
+        "http.snare.allowlist_probe":        "web.security",
+        "http.security.allowlist_toggle":    "web.security.lockdown",  # own bucket — never collapses
         "security.key_rotation_attempt":   "web.security",
         "security.audit_log_viewed":       "web.security",
         # DevTools detection — own bucket, also in _NO_COOLDOWN_EVENTS

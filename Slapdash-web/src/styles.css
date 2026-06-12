@@ -1,0 +1,273 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+/*
+ * Neuro by Cyveera — design tokens.
+ * Dark, flat, no drop shadows. All colors via tokens.
+ */
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-danger: var(--danger);
+  --color-amber: var(--amber);
+  --color-info: var(--info);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+
+  /* shadcn aliases */
+  --color-background: var(--canvas);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--text-primary);
+  --color-popover: var(--elevated);
+  --color-popover-foreground: var(--text-primary);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--elevated);
+  --color-secondary-foreground: var(--text-primary);
+  --color-muted: var(--elevated);
+  --color-muted-foreground: var(--text-secondary);
+  --color-accent-foreground: #ffffff;
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: #ffffff;
+  --color-input: var(--border);
+  --color-ring: var(--accent);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+}
+
+:root {
+  --canvas: #0a0d14;
+  --surface: #111827;
+  --elevated: #1a2235;
+  --border: #1f2d45;
+  --accent: #10b981;
+  --accent-hover: #34d399;
+  --danger: #ef4444;
+  --amber: #f59e0b;
+  --info: #3b82f6;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body {
+    background-color: var(--canvas);
+    color: var(--text-primary);
+    font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  code,
+  pre,
+  .font-mono {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 35%, transparent);
+    color: var(--text-primary);
+  }
+}
+
+@layer components {
+  .nro-card {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+
+  .nro-btn-primary {
+    background-color: var(--accent);
+    color: #fff;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: 600;
+    transition: background-color 0.15s ease;
+  }
+  .nro-btn-primary:hover {
+    background-color: var(--accent-hover);
+  }
+  .nro-btn-secondary {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: 500;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .nro-btn-secondary:hover {
+    border-color: var(--accent);
+    background-color: var(--elevated);
+  }
+  .nro-btn-danger {
+    background-color: var(--danger);
+    color: #fff;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: 600;
+  }
+
+  .nro-input {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    padding: 10px 12px;
+    width: 100%;
+    transition: outline 0.1s ease;
+  }
+  .nro-input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 0;
+  }
+
+  .nro-label {
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .nro-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+  }
+  .nro-badge--accent {
+    background: color-mix(in oklab, var(--accent) 18%, transparent);
+    color: var(--accent);
+  }
+  .nro-badge--danger {
+    background: color-mix(in oklab, var(--danger) 18%, transparent);
+    color: var(--danger);
+  }
+  .nro-badge--amber {
+    background: color-mix(in oklab, var(--amber) 18%, transparent);
+    color: var(--amber);
+  }
+  .nro-badge--slate {
+    background: var(--elevated);
+    color: var(--text-secondary);
+  }
+  .nro-badge--info {
+    background: color-mix(in oklab, var(--info) 18%, transparent);
+    color: var(--info);
+  }
+  .nro-badge--success-glow {
+    background: color-mix(in oklab, var(--accent) 18%, transparent);
+    color: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 45%, transparent),
+      0 0 14px color-mix(in oklab, var(--accent) 55%, transparent);
+    animation: nro-glow-green 2.2s ease-in-out infinite;
+  }
+  .nro-badge--danger-glow {
+    background: color-mix(in oklab, var(--danger) 18%, transparent);
+    color: var(--danger);
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--danger) 45%, transparent),
+      0 0 14px color-mix(in oklab, var(--danger) 55%, transparent);
+    animation: nro-glow-red 2.2s ease-in-out infinite;
+  }
+  @keyframes nro-glow-green {
+    0%, 100% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 45%, transparent), 0 0 10px color-mix(in oklab, var(--accent) 45%, transparent); }
+    50% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 60%, transparent), 0 0 20px color-mix(in oklab, var(--accent) 70%, transparent); }
+  }
+  @keyframes nro-glow-red {
+    0%, 100% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--danger) 45%, transparent), 0 0 10px color-mix(in oklab, var(--danger) 45%, transparent); }
+    50% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--danger) 60%, transparent), 0 0 20px color-mix(in oklab, var(--danger) 70%, transparent); }
+  }
+
+  .nro-th {
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    text-align: left;
+    padding: 12px 16px;
+  }
+  .nro-td {
+    padding: 14px 16px;
+    color: var(--text-primary);
+    border-top: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .nro-row:hover {
+    background-color: var(--elevated);
+  }
+
+  .nro-section-label {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+}
+
+@layer utilities {
+  .nro-grid-bg {
+    background-image:
+      linear-gradient(to right, color-mix(in oklab, var(--border) 70%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in oklab, var(--border) 70%, transparent) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+  .nro-radial-fade {
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 40%, transparent 80%);
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 40%, transparent 80%);
+  }
+  .nro-accent-glow {
+    background: radial-gradient(ellipse 60% 50% at 50% 0%, color-mix(in oklab, var(--accent) 22%, transparent), transparent 70%);
+  }
+  .nro-text-gradient {
+    background: linear-gradient(180deg, var(--text-primary) 0%, color-mix(in oklab, var(--text-primary) 60%, var(--accent)) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .nro-card-hover {
+    transition: border-color .2s ease, transform .2s ease, background-color .2s ease;
+  }
+  .nro-card-hover:hover {
+    border-color: color-mix(in oklab, var(--accent) 60%, var(--border));
+    background-color: color-mix(in oklab, var(--accent) 4%, var(--surface));
+  }
+  .nro-marquee {
+    animation: nro-marquee 40s linear infinite;
+  }
+  @keyframes nro-marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+  .nro-pulse-dot {
+    animation: nro-pulse 2s ease-in-out infinite;
+  }
+  @keyframes nro-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .5; transform: scale(.85); }
+  }
+}
