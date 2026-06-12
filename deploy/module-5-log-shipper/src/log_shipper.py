@@ -112,6 +112,10 @@ EVENT_QUEUE: queue.Queue = queue.Queue(maxsize=10000)
 _honeydash_batch: list = []
 _honeydash_lock  = threading.Lock()
 
+# Watermark for HTTP event poller — tracks last polled created_at from honeypot_events
+_http_poll_watermark: Optional[datetime] = None
+_http_poll_lock = threading.Lock()
+
 # ---------------------------------------------------------------------------
 # GeoIP reader (module-level — mmap'd once at startup, reused per lookup)
 # ---------------------------------------------------------------------------
@@ -1672,6 +1676,11 @@ _HD_SENSOR_NAME = {
     SENSOR_NAME_MARIADB:    "remote",
     SENSOR_NAME_API:        "remote",
     "smb":                  "remote",   # Module 8 — SMB events mapped to "remote" for HoneyDash
+    # Short-name aliases — as stored in the PostgreSQL sensor column
+    "cowrie":               "remote",
+    "opencanary":           "remote",
+    "mariadb":              "remote",
+    "api":                  "remote",
 }
 
 # Clean attack_type labels for the HoneyDash event table.
@@ -1727,6 +1736,39 @@ _HD_ATTACK_TYPE: dict = {
     "smb.file.read":      "SMB File Read",
     "smb.file.write":     "SMB File Write",
     "smb.connect":        "SMB Connect",
+    # HTTP contact form
+    "http.contact.malicious_form":           "Malicious Form Submission",
+    # Lure file discovery (/.env, /config.yaml → path_cat="lure_file")
+    "http.get.lure_file":                    "Lure File Access",
+    "http.head.lure_file":                   "Lure File Access",
+    # Git repo exposure (/.git/config, /.git/HEAD — path_cat starts with .git)
+    "http.get..git.config":                  "Git Config Exposed",
+    "http.get..git.head":                    "Git HEAD Exposed",
+    # Internal API discovery (/api/v1/internal/*)
+    "http.get.internal.config":              "Internal Config Discovery",
+    "http.get.internal.debug":               "Debug Endpoint Discovery",
+    # Cluster node recon (/api/v1/cluster/nodes)
+    "http.get.cluster.nodes":                "Cluster Node Recon",
+    # Automated scanner detection (gobuster, sqlmap, nikto, etc.)
+    "http.scanner.fingerprinted":            "Automated Scanner",
+    # Returning attacker (same IP seen on multiple sessions/days)
+    "http.workspace.returning_attacker":     "Returning Attacker",
+    # Unauthenticated access to session-gated pages
+    "http.unauth.sensitive_access":          "Unauth Sensitive Access",
+    # Authenticated user actions (inside the portal)
+    "http.profile.update":                   "Profile Updated",
+    "http.api_keys.create_attempted":        "API Key Created",
+    "http.api_keys.revoke_attempted":        "API Key Revoked",
+    "http.team.invite_submitted":            "Team Invite",
+    "http.team.remove_attempted":            "Team Member Removed",
+    # Security / settings SNARE actions
+    "http.snare.script_upload":              "Script Upload / RCE Trap",
+    "http.snare.ssh_key_submitted":          "SSH Key Submitted",
+    "http.snare.mfa_enable_attempt":         "MFA Enable Attempt",
+    "http.snare.admin_action_attempted":     "Admin Action",
+    "http.mfa.bypass_attempt":               "MFA Bypass Attempt",
+    "http.security.allowlist_toggle":        "Perimeter Lockdown Attempt",
+    "http.security.keys_rotate":             "Key Rotation",
 }
 
 # Internal Docker healthcheck and session bookkeeping — not real attacker events
@@ -1860,10 +1902,11 @@ def _flush_to_honeydash() -> None:
 
 
 def _honeydash_flush_thread() -> None:
-    """Background thread: flush HoneyDash batch every FLUSH_INTERVAL seconds."""
+    """Background thread: poll HTTP events from PostgreSQL + flush HoneyDash batch every FLUSH_INTERVAL seconds."""
     while True:
         time.sleep(FLUSH_INTERVAL)
         try:
+            _poll_http_events()   # pull sensor='api' events from PostgreSQL
             _flush_to_honeydash()
         except Exception as exc:
             log.error("honeydash_flush_thread_error", error=str(exc))
@@ -1878,6 +1921,93 @@ def _add_to_honeydash_batch(event: dict) -> None:
 
     if should_flush:
         _flush_to_honeydash()
+
+
+def _poll_http_events() -> None:
+    """Pull new sensor='api' events from PostgreSQL into the HoneyDash batch.
+
+    honeypot-api writes HTTP events directly to PostgreSQL and never goes through
+    log_shipper's watchdog (which only tails log files).  This poller bridges the gap
+    so all HTTP events — login attempts, lure downloads, SSRF probes, scanner hits —
+    reach HoneyDash through the same proven batch mechanism used for SSH/FTP/MariaDB.
+
+    Called by _honeydash_flush_thread() every FLUSH_INTERVAL seconds.
+    Watermark advances after each successful poll so no event is added twice.
+    """
+    global _http_poll_watermark
+
+    if not HONEYDASH_URL or not SENSOR_API_KEY:
+        return
+
+    from datetime import timedelta
+
+    try:
+        with _http_poll_lock:
+            if _http_poll_watermark is None:
+                # First call: start 30s in the past to catch recent events
+                _http_poll_watermark = datetime.now(timezone.utc) - timedelta(seconds=30)
+            since = _http_poll_watermark
+
+        with psycopg2.connect(POSTGRES_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT event_type, src_ip::text, src_port, dst_port,
+                           username, password, created_at
+                    FROM honeypot_events
+                    WHERE sensor = 'api'
+                      AND created_at > %s
+                    ORDER BY created_at ASC
+                    LIMIT 500
+                    """,
+                    (since,),
+                )
+                rows = cur.fetchall()
+
+        if not rows:
+            return
+
+        new_watermark = since
+        for row in rows:
+            event_type, src_ip, src_port, dst_port, username, password, created_at = row
+
+            # Strip PostgreSQL /32 CIDR suffix from inet column
+            if src_ip and "/" in src_ip:
+                src_ip = src_ip.split("/")[0]
+
+            # Always advance watermark — even for events we don't forward —
+            # so they are not re-polled on the next tick.
+            new_watermark = created_at
+
+            # Selectivity filter — only forward to HoneyDash if:
+            #   1. event_type is explicitly in _HD_ATTACK_TYPE (opt-in allowlist), OR
+            #   2. username is not None (any login credential submission)
+            # Lure paths like /artifacts, /runs, /models are NOT forwarded — they are
+            # portal navigation, not attacks. True lure file event_types (http.get.lure_file,
+            # http.get..git.config, etc.) are listed in _HD_ATTACK_TYPE explicitly.
+            if event_type not in _HD_ATTACK_TYPE and username is None:
+                continue
+
+            event = {
+                "eventid":   event_type,
+                "sensor":    "api",           # _honeydash_event() remaps "api" → "remote"
+                "src_ip":    src_ip,
+                "src_port":  src_port,
+                "dst_port":  dst_port or 8080,
+                "username":  username,
+                "password":  password,
+                "timestamp": created_at.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
+                "protocol":  "http",
+            }
+            _add_to_honeydash_batch(event)
+
+        with _http_poll_lock:
+            _http_poll_watermark = new_watermark
+
+        log.debug("http_poll_ok", count=len(rows))
+
+    except Exception as exc:
+        log.warning("http_poll_error", error=str(exc))
 
 
 # ---------------------------------------------------------------------------

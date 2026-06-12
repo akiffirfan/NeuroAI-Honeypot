@@ -42,18 +42,13 @@ TELEGRAM_CHAT_ID    = _read_secret("telegram_chat_id",   "TELEGRAM_CHAT_ID")
 POSTGRES_DSN        = os.environ["POSTGRES_DSN"]
 POLL_INTERVAL       = int(os.environ.get("POLL_INTERVAL", "10"))
 ALERT_COOLDOWN_SECS = int(os.environ.get("ALERT_COOLDOWN_SECS", "60"))
-# Three-tier HTTP alert cooldown:
-#   Tier 1 — always-alert:  /admin, /api-keys, /artifacts, /settings/*  →  0s (no suppression)
-#   Tier 2 — sensitive:     /jobs/new, /models, /datasets, /runs         →  300s
-#   Tier 3 — routine:       /dashboard, /notifications, generic probes   →  1800s
 _SENSITIVE_COOLDOWN_SECS = 300
 _ROUTINE_COOLDOWN_SECS   = 1800
 
 _HTTP_TIER_COOLDOWN = {
-    "http.always_alert": 0,
     "http.sensitive":    _SENSITIVE_COOLDOWN_SECS,
     "http.routine":      _ROUTINE_COOLDOWN_SECS,
-    "web.webhook":       _SENSITIVE_COOLDOWN_SECS,   # external webhook test — 5-min cooldown
+    "web.webhook":       _SENSITIVE_COOLDOWN_SECS,
 }
 
 logging.basicConfig(
@@ -417,20 +412,7 @@ def _should_alert(row: dict) -> tuple:
     if event_type in _SNARE_CATEGORIES:
         cooldown_category = _SNARE_CATEGORIES[event_type]
     elif event_type.startswith("http."):
-        # Strip "http.<method>." prefix to get the path portion
-        parts = event_type.split(".", 2)
-        et_path = parts[2] if len(parts) > 2 else ""
-        # Tier 1 — always-alert: admin, api-keys, artifacts, settings/*
-        if any(kw in et_path for kw in ("admin", "api-keys", "artifacts", "settings.")):
-            cooldown_category = "http.always_alert"
-        # Tier 2 — sensitive (5-min cooldown): jobs/new, models, datasets, runs
-        elif any(et_path == kw or et_path.startswith(kw + ".") for kw in ("jobs.new", "models", "datasets", "runs")):
-            cooldown_category = "http.sensitive"
-        # Tier 3 — routine (30-min cooldown): dashboard, notifications, pipelines, static, generic probes
-        elif any(kw in et_path for kw in ("dashboard", "notifications", "pipelines", "static")):
-            cooldown_category = "http.routine"
-        else:
-            cooldown_category = "http"
+        cooldown_category = "http"
     elif event_type == "cowrie.login.failed":
         _PORT_PROTO = {2222: "ssh", 21: "ftp", 23: "telnet", 25: "smtp", 6379: "redis", 3306: "mysql"}
         cooldown_category = f"login.{_PORT_PROTO.get(dst_port, 'other')}"

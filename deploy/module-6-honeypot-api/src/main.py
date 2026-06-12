@@ -267,6 +267,26 @@ _LURE_PATHS = {
     "/status",                             # public status page — scanner exposure
 }
 
+# Portal navigation paths whose GET responses are pure page loads — not attacks.
+# These are excluded from PostgreSQL logging when: method=GET, no attack detected,
+# clean 2xx/3xx response. POST actions on these pages are always logged.
+_PORTAL_NAV_PATHS = frozenset({
+    "/dashboard",
+    "/admin",
+    "/artifacts",
+    "/runs",
+    "/models",
+    "/datasets",
+    "/jobs/new",
+    "/notifications",
+    "/settings/profile",
+    "/settings/integrations",
+    "/settings/workspace",
+    "/settings/security",
+    "/settings/api-keys",
+    "/pipelines",
+})
+
 # Known scanner User-Agent fragments for bot scoring
 _SCANNER_UA_FRAGMENTS = [
     "sqlmap", "nikto", "nmap", "masscan", "zgrab", "nuclei",
@@ -721,9 +741,28 @@ async def request_logger(request: Request, call_next):
         **geo,
     }
 
-    # Log to PG + Redis (runs synchronously in middleware — acceptable for I/O-bound ops)
-    # Use asyncio.to_thread to avoid blocking the event loop
-    asyncio.create_task(_log_event_async(event))
+    # Decide whether to write to PostgreSQL.
+    # Skip: static assets, health checks, and routine authenticated portal page GETs
+    # that carry zero attack signal. Everything else (POST, attacks, scanners, 4xx/5xx,
+    # login attempts, API calls) is always recorded.
+    _should_log = True
+    if (
+        path.startswith("/static/")
+        or path == "/favicon.ico"
+        or path in ("/api/v1/health", "/api/v2/health")
+    ):
+        _should_log = False
+    elif (
+        request.method == "GET"
+        and path in _PORTAL_NAV_PATHS
+        and snare_attack_type is None
+        and not _is_scanner_event
+        and response.status_code in (200, 302, 304)
+    ):
+        _should_log = False
+
+    if _should_log:
+        asyncio.create_task(_log_event_async(event))
 
     # HoneyDash push — only for SNARE attack events and high-value lure hits.
     # Uses httpx.AsyncClient (non-blocking). Gated on HONEYDASH_URL being non-empty.
@@ -1519,10 +1558,14 @@ async def _check_scan_rate(src_ip: str, path: str) -> bool:
 
 async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None:
     """
-    Async fire-and-forget HoneyDash push for high-value SNARE/lure events.
-    Uses httpx.AsyncClient so it never blocks the event loop.
-    Only called when HONEYDASH_URL is non-empty.
+    Disabled: HoneyDash push is now handled exclusively by log_shipper's PostgreSQL
+    poller (_poll_http_events), which reads sensor='api' events from honeypot_events
+    and batches them every FLUSH_INTERVAL seconds.  Per-event httpx pushes caused
+    ReadTimeout errors under scanner load because each login attempt fired a separate
+    HTTP request; the batch approach (same as SSH/FTP/MariaDB) is reliable.
     """
+    return  # noop — log_shipper poller handles all HoneyDash delivery
+
     if not HONEYDASH_URL or not SENSOR_API_KEY:
         return
 
