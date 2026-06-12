@@ -69,3 +69,20 @@ gemini-solution.md
 # Staging / test sandboxes — not canonical source
 # -----------------------------------------------------------------------------
 module-6-honeypot-api-test/
+
+# -----------------------------------------------------------------------------
+# Session planning docs — scratch files, never commit
+# -----------------------------------------------------------------------------
+slapdash-backend.md
+slapdash-web.md
+slapdash-feedback.md
+slapdash-*.md
+Lastminite-*.md
+tools-detection.md
+tools-detection-feedback.md
+frontend-latest/
+Dashboard-Limitation.md
+improvement-fix.md
+neuro-attack-verify.sh
+new-problem/
+session-7-plan.md
