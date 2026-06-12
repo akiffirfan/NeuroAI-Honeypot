@@ -71,6 +71,12 @@ gemini-solution.md
 module-6-honeypot-api-test/
 
 # -----------------------------------------------------------------------------
+# Lovable platform metadata — not part of the project
+# -----------------------------------------------------------------------------
+**/.lovable/
+Slapdash-web/src/lib/lovable-error-reporting.ts
+
+# -----------------------------------------------------------------------------
 # Session planning docs — scratch files, never commit
 # -----------------------------------------------------------------------------
 slapdash-backend.md
