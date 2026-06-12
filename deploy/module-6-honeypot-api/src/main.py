@@ -188,10 +188,14 @@ def _ensure_hd_client() -> Optional[httpx.AsyncClient]:
     global _hd_client
     if not HONEYDASH_URL or not SENSOR_API_KEY:
         return None
-    if _hd_client is None:
+    if _hd_client is None or _hd_client.is_closed:
         _hd_client = httpx.AsyncClient(
-            timeout=3.0,
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+            timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=5.0),
+            limits=httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=30.0,  # recycle before nginx's default 75s keepalive_timeout
+            ),
         )
     return _hd_client
 
@@ -620,7 +624,17 @@ async def request_logger(request: Request, call_next):
     ua_str = request.headers.get("user-agent", "")
     snare_hit = _detect_web_attack(path, query_str, body_str, ua_str)
 
-    # Determine event_type — priority: lure-cred > data-exfil > SNARE > default
+    # Tool fingerprinting — pure function, no I/O, safe to call synchronously.
+    # If SNARE already classified this request, fingerprinting is for payload
+    # enrichment only (event_type will NOT be overridden below).
+    _tool_fp = _fingerprint_tool(ua_str, path, body_str)
+
+    # Rate check — async, uses existing _get_redis_async() client.
+    # Awaited directly because _check_scan_rate is already async (redis.asyncio).
+    # Path is passed so static/health paths are excluded inside the function.
+    _scan_rate_flag = await _check_scan_rate(src_ip, path)
+
+    # Determine event_type — priority: lure-cred > data-exfil > SNARE > scanner > default
     if _lure_cred_hit:
         event_type = "http.lure.credential.success"
         snare_attack_type = "Lure Credential"
@@ -633,6 +647,32 @@ async def request_logger(request: Request, call_next):
     else:
         event_type = f"http.{request.method.lower()}.{path_cat}"[:80]
         snare_attack_type = None
+
+    # Scanner fingerprint escalation — promote to dedicated event type when:
+    #   (a) tool identified with confidence "high" or "medium", OR
+    #   (b) low-confidence UA match + rate-based flag (automated behaviour confirmed)
+    # Skip escalation entirely when SNARE or lure-cred or data-exfil already classified
+    # the request — tool metadata is still added to payload below but event_type stays.
+    _is_scanner_event = False
+    if _tool_fp:
+        confidence = _tool_fp.get("confidence", "")
+        if confidence in ("high", "medium"):
+            _is_scanner_event = True
+        elif confidence == "low" and _scan_rate_flag:
+            _is_scanner_event = True
+    elif _scan_rate_flag:
+        # Rate exceeded but no tool signature — flag as generic automated scanner
+        _tool_fp = {
+            "inferred_tool":    "automated_scanner",
+            "confidence":       "high",
+            "detection_method": "rate",
+        }
+        _is_scanner_event = True
+
+    # Scanner event_type override: only when no higher-priority classification applies.
+    if _is_scanner_event and snare_attack_type is None and not _lure_cred_hit and not _lure_data_exfil:
+        event_type = "http.scanner.fingerprinted"
+        snare_attack_type = f"Automated Scanner — {_tool_fp['inferred_tool'].replace('_', ' ').title()}"
 
     payload_dict = {
         "method": request.method,
@@ -648,6 +688,16 @@ async def request_logger(request: Request, call_next):
         "bot_score": round(bot_score, 3),
         "x_forwarded_for": request.headers.get("x-forwarded-for"),
     }
+
+    # Enrich payload with tool fingerprint data when available.
+    # Present on every event that has a tool match — not just http.scanner.fingerprinted.
+    # Downstream: sentinel reads inferred_tool from payload JSONB.
+    if _tool_fp:
+        payload_dict["inferred_tool"]    = _tool_fp["inferred_tool"]
+        payload_dict["confidence"]       = _tool_fp["confidence"]
+        payload_dict["detection_method"] = _tool_fp["detection_method"]
+    if _scan_rate_flag:
+        payload_dict["scan_rate_exceeded"] = True
 
     event: dict[str, Any] = {
         "event_id": str(uuid.uuid4()),
@@ -1078,6 +1128,395 @@ def _detect_web_attack(path: str, query_str: str, body_str: str, user_agent: str
     return None
 
 
+# ---------------------------------------------------------------------------
+# Tool fingerprinting signatures — server-side only, never sent to client
+#
+# Structure:
+#   tool_name (str) → {
+#     "ua_patterns":      list[str]  — substrings matched case-insensitively in User-Agent
+#     "payload_patterns": list[str]  — substrings matched case-insensitively in combined
+#                                      (path + query + body) after double-URL-decode
+#     "path_patterns":    list[str]  — substrings matched case-insensitively in path only
+#                                      (for path-based enumeration signatures)
+#   }
+#
+# Confidence assignment rules (in _fingerprint_tool):
+#   UA match alone → "medium"  (UA is trivially spoofed but lazy tools never bother)
+#   Payload/path match alone → "high"  (harder to spoof than UA)
+#   Both UA + payload/path match → "high"
+#
+# ORDERING CONSTRAINT:
+#   Specific tools (sqlmap, nuclei, burp) must come before generic ones
+#   (python_scanner, curl_mass_scanner). The loop is first-match-wins; a generic
+#   entry appearing earlier would shadow the specific one that should win.
+#   Within each tier: OOB-domain signatures (burp, nuclei) before UA-only tools.
+# ---------------------------------------------------------------------------
+_TOOL_SIGNATURES: dict[str, dict[str, list[str]]] = {
+    # --- Tier 1: highly specific — distinct UA strings or stable payload canaries ---
+
+    "sqlmap": {
+        "ua_patterns": [
+            "sqlmap/",
+        ],
+        "payload_patterns": [
+            "and sleep(",
+            "and 1=1--",
+            "' or '1'='1",
+            "union select null--",
+            "benchmark(",
+            "waitfor delay",
+            "pg_sleep(",
+            "(select * from",
+            "randomblob(",
+            "load_file(",
+            "into outfile",
+            "extractvalue(",
+            "updatexml(",
+            "floor(rand(",
+            "'/**/or/**/",
+            "0x7e",
+        ],
+        "path_patterns": [],
+    },
+
+    "nuclei": {
+        "ua_patterns": [
+            "nuclei/",
+            "projectdiscovery",
+        ],
+        "payload_patterns": [
+            "interact.sh",
+            "nuclei-",
+        ],
+        "path_patterns": [
+            "/.nuclei-",
+            "/nuclei-",
+            "/.well-known/nuclei",
+        ],
+    },
+
+    "burp": {
+        "ua_patterns": [
+            "burp",
+            "burpsuite",
+        ],
+        "payload_patterns": [
+            "burpcollaborator.net",
+            "oastify.com",
+            "burp-is-the-best-dastool",
+            "portswiggerlabs",
+            "portswigger",
+        ],
+        "path_patterns": [
+            "/burp-is-the-best-dastool",
+            "/.burpcollaborator",
+        ],
+    },
+
+    "metasploit": {
+        "ua_patterns": [
+            "msf",
+            "metasploit",
+        ],
+        "payload_patterns": [
+            "meterpreter",
+            "msf/",
+        ],
+        "path_patterns": [
+            "/sdk/",
+        ],
+    },
+
+    "nmap_nse": {
+        "ua_patterns": [
+            "nmap scripting engine",
+            "nmap nse",
+        ],
+        "payload_patterns": [
+            "nmap",
+        ],
+        "path_patterns": [],
+    },
+
+    # --- Tier 2: tool-specific UAs, no shared payload overlap ---
+
+    "gobuster": {
+        "ua_patterns": [
+            "gobuster/",
+            "gobuster",
+        ],
+        "payload_patterns": [],
+        "path_patterns": [],
+    },
+
+    "ffuf": {
+        "ua_patterns": [
+            "ffuf/",
+            "fuzz faster",
+        ],
+        "payload_patterns": [],
+        "path_patterns": [
+            "/FUZZ",
+        ],
+    },
+
+    "dirsearch": {
+        "ua_patterns": [
+            "dirsearch",
+            "python-dirsearch",
+            "dirstalk",
+        ],
+        "payload_patterns": [],
+        "path_patterns": [
+            "/.ds_store",
+        ],
+    },
+
+    "nikto": {
+        "ua_patterns": [
+            "nikto/",
+            "nikto",
+        ],
+        "payload_patterns": [
+            "nessus",
+            "appscan",
+        ],
+        "path_patterns": [
+            "/cgi-bin/",
+            "/phpinfo.php",
+            "/admin.php",
+            "/administrator",
+            "/.htaccess",
+        ],
+    },
+
+    "masscan": {
+        "ua_patterns": [
+            "masscan/",
+            "masscan",
+        ],
+        "payload_patterns": [],
+        "path_patterns": [],
+    },
+
+    "zgrab": {
+        "ua_patterns": [
+            "zgrab/",
+            "zgrab",
+        ],
+        "payload_patterns": [],
+        "path_patterns": [],
+    },
+
+    "hydra": {
+        "ua_patterns": [
+            "hydra",
+        ],
+        "payload_patterns": [],
+        "path_patterns": [],
+    },
+
+    "wfuzz": {
+        "ua_patterns": [
+            "wfuzz/",
+        ],
+        "payload_patterns": [
+            "fuzzdb",
+        ],
+        "path_patterns": [
+            "/FUZZ",
+        ],
+    },
+
+    # --- Tier 3: generic UA patterns — low confidence, require rate-flag to escalate ---
+
+    "curl_mass_scanner": {
+        "ua_patterns": [
+            "curl/",
+            "wget/",
+        ],
+        "payload_patterns": [],
+        "path_patterns": [],
+    },
+
+    "python_scanner": {
+        "ua_patterns": [
+            "python-requests/",
+            "python-httpx/",
+            "python-urllib",
+            "aiohttp/",
+        ],
+        "payload_patterns": [],
+        "path_patterns": [],
+    },
+}
+
+# OOB/collaborator domains that multiple DAST tools share — emit as "oast_dast"
+# instead of attributing to whichever dict entry happens to come first.
+_SHARED_OOB_DOMAINS = {"burpcollaborator.net", "oastify.com"}
+
+
+def _fingerprint_tool(ua: str, path: str, body: str) -> dict:
+    """
+    Match request signals against _TOOL_SIGNATURES to identify the likely tool.
+
+    Returns a dict with keys:
+        inferred_tool    (str)  — tool name from _TOOL_SIGNATURES key, or "oast_dast"
+        confidence       (str)  — "high", "medium", or "low"
+        detection_method (str)  — "user_agent", "payload", "path", or "combined"
+
+    Returns {} if no tool is identified.
+
+    Detection priority (first match wins — dict insertion order enforces specificity):
+        1. UA + payload/path match  → confidence "high", method "combined"
+        2. Payload/path match only  → confidence "high", method "payload" or "path"
+        3. UA match only            → confidence "medium", method "user_agent"
+           Exception: curl_mass_scanner / python_scanner UA matches emit confidence
+           "low" because these UAs have high false-positive rates.
+
+    Special case — shared OOB domains (burpcollaborator.net, oastify.com):
+        If the ONLY payload signal is a shared OOB domain and no UA confirms a specific
+        tool, emit inferred_tool: "oast_dast".
+
+    All comparisons are case-insensitive. The body is double-URL-decoded before
+    matching (same transformation applied in _detect_web_attack).
+    """
+    if not (ua or path or body):
+        return {}
+
+    def _dd(s: str) -> str:
+        d = urllib.parse.unquote_plus(s)
+        return urllib.parse.unquote_plus(d)
+
+    ua_lower       = ua.lower()
+    path_lower     = _dd(path).lower()
+    body_lower     = _dd(body).lower()
+    combined_lower = path_lower + " " + body_lower
+
+    # Low-confidence UA-only tools — only promote these if rate detection also flags
+    _LOW_CONFIDENCE_UA_TOOLS = {"curl_mass_scanner", "python_scanner"}
+
+    for tool_name, sigs in _TOOL_SIGNATURES.items():
+        ua_hit      = any(p in ua_lower      for p in sigs.get("ua_patterns",      []))
+        payload_hit = any(p in combined_lower for p in sigs.get("payload_patterns", []))
+        path_hit    = any(p in path_lower     for p in sigs.get("path_patterns",    []))
+
+        if ua_hit and (payload_hit or path_hit):
+            return {
+                "inferred_tool":    tool_name,
+                "confidence":       "high",
+                "detection_method": "combined",
+            }
+        if payload_hit:
+            # Special case: shared OOB domain with no corroborating UA → emit oast_dast
+            matched_payload = next(
+                p for p in sigs.get("payload_patterns", []) if p in combined_lower
+            )
+            if matched_payload in _SHARED_OOB_DOMAINS and not ua_hit:
+                return {
+                    "inferred_tool":    "oast_dast",
+                    "confidence":       "medium",
+                    "detection_method": "payload",
+                }
+            return {
+                "inferred_tool":    tool_name,
+                "confidence":       "high",
+                "detection_method": "payload",
+            }
+        if path_hit:
+            return {
+                "inferred_tool":    tool_name,
+                "confidence":       "high",
+                "detection_method": "path",
+            }
+        if ua_hit:
+            confidence = "low" if tool_name in _LOW_CONFIDENCE_UA_TOOLS else "medium"
+            return {
+                "inferred_tool":    tool_name,
+                "confidence":       confidence,
+                "detection_method": "user_agent",
+            }
+
+    return {}
+
+
+# Scan rate thresholds — configurable without code change
+_SCAN_RATE_WINDOW_SECS  = 10    # sliding window length in seconds
+_SCAN_RATE_THRESHOLD    = 20    # distinct non-static requests within window to flag
+_SCAN_RATE_KEY_TTL_SECS = 60    # max Redis key lifetime (caps memory under IP rotation)
+
+# Paths and prefixes excluded from rate tracking — static assets cause multi-hit counts
+# from a single page load; healthcheck generates one hit every 30s from 127.0.0.1.
+_SCAN_RATE_SKIP_PREFIXES = ("/static/", "/favicon.ico")
+_SCAN_RATE_SKIP_EXACT    = {"/api/v1/health", "/api/v2/health"}
+
+
+def _normalize_src_ip_for_rate(src_ip: str) -> str:
+    """
+    Normalize a source IP string for use as a Redis rate-limit key.
+
+    Rules:
+        1. Strip PostgreSQL /32 or /128 CIDR suffix
+        2. Strip IPv4-mapped IPv6 prefix (::ffff:) → bare IPv4
+        3. Truncate full IPv6 to /64 (first 4 groups) — attackers rotate within /64
+
+    Examples:
+        "1.2.3.4"              → "1.2.3.4"
+        "1.2.3.4/32"           → "1.2.3.4"
+        "::ffff:1.2.3.4"       → "1.2.3.4"
+        "2001:db8:1:2:3:4:5:6" → "2001:db8:1:2"
+    """
+    ip = src_ip.split("/")[0].strip()
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    if ":" in ip:
+        parts = ip.split(":")
+        ip = ":".join(parts[:4])
+    return ip
+
+
+async def _check_scan_rate(src_ip: str, path: str) -> bool:
+    """
+    Return True if src_ip has exceeded _SCAN_RATE_THRESHOLD non-static requests
+    in the last _SCAN_RATE_WINDOW_SECS seconds, indicating an automated scanner.
+
+    Static assets (/static/*) and healthcheck paths are excluded — a real browser
+    loading a multi-asset page would otherwise cross the threshold.
+
+    Uses a Redis sorted set via the existing async client (_get_redis_async()):
+        Key:    honeypot:scanrate:<normalized_src_ip>
+        Member: <uuid4>  (unique per request)
+        Score:  current Unix timestamp (float)
+
+    Returns False if Redis is unavailable (fail-open — prefer missing detections
+    over breaking the honeypot response path).
+    """
+    if path in _SCAN_RATE_SKIP_EXACT:
+        return False
+    if any(path.startswith(pfx) for pfx in _SCAN_RATE_SKIP_PREFIXES):
+        return False
+
+    normalized_ip = _normalize_src_ip_for_rate(src_ip)
+
+    try:
+        r = _get_redis_async()
+        key = f"honeypot:scanrate:{normalized_ip}"
+        now = time.time()
+        window_start = now - _SCAN_RATE_WINDOW_SECS
+
+        pipe = r.pipeline()
+        pipe.zadd(key, {str(uuid.uuid4()): now})
+        pipe.zremrangebyscore(key, "-inf", window_start)
+        pipe.zcard(key)
+        pipe.expire(key, _SCAN_RATE_KEY_TTL_SECS)
+        results = await pipe.execute()
+
+        count = results[2]  # ZCARD result
+        return count >= _SCAN_RATE_THRESHOLD
+    except Exception:
+        return False
+
+
 async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None:
     """
     Async fire-and-forget HoneyDash push for high-value SNARE/lure events.
@@ -1157,7 +1596,9 @@ async def _push_honeydash_async(event: dict[str, Any], attack_type: str) -> None
         if resp.status_code not in (200, 201, 202, 204):
             logger.warning("honeydash_push_non2xx", status=resp.status_code)
     except Exception as exc:
-        logger.warning("honeydash_push_error", error=str(exc))
+        global _hd_client
+        _hd_client = None  # force fresh client on next push (stale keepalive recovery)
+        logger.warning("honeydash_push_error", exc_type=type(exc).__name__, error=str(exc) or repr(exc))
 
 
 # ---------------------------------------------------------------------------

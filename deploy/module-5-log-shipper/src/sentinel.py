@@ -82,6 +82,50 @@ def _suppressed(src_ip: str, category: str, cooldown: int = ALERT_COOLDOWN_SECS)
     return False
 
 
+def _scanner_already_seen_pg(conn, src_ip: str, inferred_tool: str) -> bool:
+    """
+    Return True if we have already sent a Telegram alert for this (IP, tool) pair
+    within the last hour, determined by checking honeypot_events directly.
+
+    Uses the existing psycopg2 connection that the sentinel polling loop holds.
+    No new imports, no new env vars, no Redis dependency.
+
+    Query: COUNT(*) of http.scanner.fingerprinted rows for this src_ip + inferred_tool
+    in the last hour. If count > 1, we have already fired at least one alert for this
+    pair during the current hour window, so suppress.
+
+    Threshold is > 1 (not > 0) because the event that is being evaluated right now is
+    already written to honeypot_events by main.py before sentinel ever polls it. A count
+    of exactly 1 means this IS the first event — fire the alert. A count > 1 means we
+    have seen this pair at least once before in the past hour — suppress.
+
+    Fail-closed on any exception: return True (suppress) rather than flood on DB error.
+    IP normalization: strip CIDR suffix with split("/")[0], consistent with _build_message.
+    """
+    ip = (src_ip or "").split("/")[0].strip()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM honeypot_events
+                WHERE event_type = 'http.scanner.fingerprinted'
+                  AND src_ip::text LIKE %s
+                  AND payload->>'inferred_tool' = %s
+                  AND created_at > NOW() - INTERVAL '1 hour'
+                """,
+                (f"{ip}%", inferred_tool),
+            )
+            row = cur.fetchone()
+            count = row[0] if row else 0
+        # count == 1: this is the row currently being processed (first occurrence) — alert
+        # count  > 1: a prior alert has already fired for this (IP, tool) in the hour — suppress
+        return count > 1
+    except Exception:
+        # DB error — fail closed: suppress rather than flood
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Alert decision logic
 # ---------------------------------------------------------------------------
@@ -113,6 +157,7 @@ _NO_COOLDOWN_EVENTS = {
     "http.unauth.sensitive_access",    # direct hit on /admin /api-keys /jobs-new without session — always alert
     "http.snare.mfa_enable_attempt",   # password submitted to enable MFA — always alert (captures credential)
     "http.security.allowlist_toggle",  # attacker attempting perimeter lockdown — always alert
+    "http.scanner.fingerprinted",      # new tool identification — each is distinct intel, no cooldown
 }
 
 
@@ -189,6 +234,13 @@ def _build_reason(event_type: str, row: dict, payload: dict) -> str:
         return f"Command: {cmd_input[:120]}"
     if event_type == "cowrie.session.file_download":
         return f"Payload download: {url or '(unknown)'}"
+    if event_type == "http.scanner.fingerprinted":
+        tool      = payload.get("inferred_tool") or "automated scanner"
+        method    = payload.get("detection_method") or "signature"
+        conf      = payload.get("confidence") or "?"
+        rate_flag = payload.get("scan_rate_exceeded", False)
+        rate_note = " + rate exceeded" if rate_flag else ""
+        return f"Tool fingerprinted: {tool} — confidence={conf}, method={method}{rate_note} — path={path}"
     # SNARE web attack event types — show attack category + method + path
     _SNARE_LABELS = {
         "http.sqli.attempt":      "SQL Injection",
@@ -357,6 +409,8 @@ def _should_alert(row: dict) -> tuple:
         "security.audit_log_viewed":       "web.security",
         # DevTools detection — own bucket, also in _NO_COOLDOWN_EVENTS
         "http.telemetry.devtools_opened":  "web.devtools",
+        # Scanner fingerprint — own bucket so tool detections don't share cooldown with generic http
+        "http.scanner.fingerprinted":      "web.scanner",
     }
     if event_type in _SNARE_CATEGORIES:
         cooldown_category = _SNARE_CATEGORIES[event_type]
@@ -454,6 +508,10 @@ def _build_message(row: dict, reason: str) -> str:
         header = "🔍 <b>DEVTOOLS OPENED — HUMAN ATTACKER</b>"
     elif event_type.startswith("security."):
         header = "🔐 <b>SECURITY PAGE ACTION</b>"
+    elif event_type == "http.scanner.fingerprinted":
+        tool       = (payload_data.get("inferred_tool") or "Unknown Tool").replace("_", " ").upper()
+        confidence = payload_data.get("confidence") or "?"
+        header = f"🚨🤖 <b>SCANNER IDENTIFIED — {_esc(tool)} ({_esc(confidence)})</b>"
     else:
         header = "🚨 <b>Honeypot Alert</b>"
 
@@ -760,6 +818,24 @@ def main() -> None:
                     # No-cooldown events always fire regardless of suppression window.
                     # HTTP pages use the 3-tier map; all others use the global cooldown.
                     cooldown = _HTTP_TIER_COOLDOWN.get(category, ALERT_COOLDOWN_SECS)
+
+                    # Per-tool PostgreSQL dedup — suppresses repeat scanner alerts for
+                    # the same (IP, tool) pair within a 1-hour window.
+                    # Only applies to http.scanner.fingerprinted — all other event types
+                    # use the normal _suppressed() cooldown path below.
+                    # Uses existing conn — no new imports or env vars required.
+                    if event_type == "http.scanner.fingerprinted":
+                        raw_payload = row.get("payload") or "{}"
+                        try:
+                            _pl = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+                        except Exception:
+                            _pl = {}
+                        _itool = _pl.get("inferred_tool") or "unknown"
+                        _ip_clean = (src_ip or "").split("/")[0]
+                        if _scanner_already_seen_pg(conn, _ip_clean, _itool):
+                            log.info("scanner_alert_deduped src_ip=%s tool=%s", _ip_clean, _itool)
+                            continue  # skip send_alert; cursor already advanced above
+
                     if event_type in _NO_COOLDOWN_EVENTS or not _suppressed(src_ip, category, cooldown):
                         send_alert(row, reason, category)
 
